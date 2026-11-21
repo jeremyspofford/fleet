@@ -102,6 +102,7 @@ They accept `agents`, a list of agent names, and `domains`, a list of declared d
 Without `agents`, every selected agent that supports the item receives it. Without `domains`, every machine receives it.
 An unknown agent name prints a warning and is skipped. Content can name an agent that an older manager lacks.
 A domain must be one that the content declares.
+Fleet rejects `core` in `domains`, because core always applies. Omit `domains` to reach every machine.
 
 Skills are ordinary content. Each folder under `.agents/skills/` that holds `SKILL.md` is one skill.
 chezmoi installs skills at `~/.agents/skills`, as it installs other content.

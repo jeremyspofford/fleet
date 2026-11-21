@@ -73,7 +73,9 @@ A connector with a `url` renders as an HTTP server entry, because the agent itse
 A connector cannot be named `fleet`; the gateway uses that name.
 A connector without a `url` appears in Next steps as a manual step.
 
-Rule sets combine into one file per agent in the tree. Codex and Pi read no include file, so Fleet reports their rule sets as unsupported.
+Rule sets combine into one file per agent in the tree. Codex and Pi read no include file.
+Codex receives the combined rule text in its top-level `developer_instructions` setting in `~/.codex/config.toml`.
+Pi receives a link at `~/.pi/agent/APPEND_SYSTEM.md` to its rule file in the tree. Pi 1.3.0 reads that linked file, tested on 2026-11-20.
 Whole instruction files, such as `AGENTS.md`, stay ordinary content. Install them under their real names.
 
 Each hook runs a wrapper in the tree. The wrapper sets `FLEET_AGENT`, `FLEET_HOOK`, and `FLEET_HOOK_EVENT`, then runs a copy of the hook script.
@@ -120,8 +122,9 @@ Hooks become notes: move each command into a tracked script, then declare it. Op
 
 Drift means a recorded output differs from its record or is missing.
 `fleet status` counts agent drift in its Drift line. `fleet doctor` fails its managed-files check.
-`fleet diff` prints one patch per changed output and lists each agent conflict. It exits 1.
-The update gate treats agent drift as a drift repair trigger. A missing output returns; a changed output stops the update with its fix.
+`fleet diff` prints one patch per changed output. It exits 1.
+The update gate treats agent drift as a drift repair trigger. A missing output returns.
+A changed output stays the user's: the update keeps it, stops managing it, and prints one line.
 Outputs of an agent that is off never count as drift.
 
 ## Plugins
@@ -137,7 +140,10 @@ Fleet fully manages declared plugins. Where an agent installs a listed plugin by
 | codex | `codex plugin marketplace add MARKETPLACE`, then `codex plugin add ID` | `codex plugin remove ID` |
 | gemini | `gemini extensions install ID --consent` | `gemini extensions uninstall NAME`, where NAME is the last part of ID |
 
-Listing entries follow the owned-entry rules below, including drift, conflicts, and the exception list.
+Listing entries follow the owned-entry rules below, including drift and the exception list.
+A plugin that the agent already lists, or already installed, stays yours. Fleet records nothing for it and prints one line.
+Fleet reads Codex's `[plugins."ID"]` tables and Gemini CLI's `~/.gemini/extensions/NAME` folders for this check. It runs no agent command.
+A later removed declaration uninstalls nothing for such a plugin.
 Claude Code installs a listed plugin during an interactive start, in the background. The plugin loads from the next session.
 A headless `claude -p` run does not install it. OpenCode and Pi install a listed plugin at their next start.
 Next steps names each agent's step in the run that first writes the listing.
@@ -162,13 +168,14 @@ Fleet compares only the keys that it wrote. Keys that an agent adds inside an en
 | Finding | Action |
 | --- | --- |
 | Nothing exists at the target | Create the output and record it. |
-| An unrecorded value equals the rendered value | Record it without a write. |
-| An unrecorded value differs | Conflict. Nothing is written. |
-| A recorded output changed | Conflict. Nothing is written. |
+| An unrecorded value equals the rendered value | Leave it unrecorded. Fleet writes nothing. |
+| An unrecorded value differs | Keep the user's value. Fleet writes and records nothing. |
+| A recorded output changed | Keep the user's value. Fleet drops its record. |
 | A recorded output is missing | Create it again. |
 
-A conflict stops the run before backup. Fleet lists each item, its file, and the fix.
-Keep the local value with `fleet agents set --name ITEM --state local`, or move the existing value aside. Then run the update again.
+Each kept value prints one line in the run account, with the agent, the item, and the file. Later runs stay quiet about it.
+No case stops a run or asks a question, so unattended updates complete. Tree files are Fleet's: an edited tree file is replaced.
+Delete a kept value to hand it back. The next update writes Fleet's value and records it.
 
 An output becomes stale when its declaration disappears or no longer selects this machine.
 Fleet removes a stale output that still matches its record. A changed stale output stays, with one report line.
@@ -178,6 +185,7 @@ Shared files follow these rules:
 
 1. Fleet parses the file first. It stops on invalid content or a link that leaves home.
 2. Fleet changes only its own entries. It rewrites Codex's TOML table at the end of the file and keeps every other byte.
+   A top-level key, such as `developer_instructions`, goes before the first table.
 3. Fleet stops when a comment sits inside its own TOML table. Move the comment outside that table.
 4. Fleet parses the result. It stops unless every other value equals its earlier value.
 5. Fleet writes atomically and keeps the file's permissions.
