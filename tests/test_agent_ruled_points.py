@@ -153,7 +153,19 @@ class CodexRulesTests(Fixture):
         (self.checkout / "agents/rules/style.md").write_text("Write short commits.\n")
         from test_manager import command
 
-        command("git", "-C", str(self.checkout), "commit", "-qm", "rules", "agents/rules/style.md")
+        command(
+            "git",
+            "-C",
+            str(self.checkout),
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-qm",
+            "rules",
+            "agents/rules/style.md",
+        )
         self.run_plan()
         after = config.read_text()
         self.assertIn("Write short commits.", tomllib.loads(after)["developer_instructions"])
