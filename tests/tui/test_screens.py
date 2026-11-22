@@ -277,7 +277,7 @@ class ScreenTests(unittest.IsolatedAsyncioTestCase):
     async def test_uninstall_requires_its_word_and_cancel_keeps_the_profile(self):
         removed = []
 
-        def transaction(home, operations, label, selected, word, trees):
+        def transaction(home, operations, label, selected, word, trees, **options):
             if command.confirm(word, label, self.record):
                 removed.append(word)
                 print(render(self.record), end="")

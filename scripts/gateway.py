@@ -17,6 +17,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import subprocess
 import sys
 import threading
@@ -50,17 +51,81 @@ def expand(text, environment):
     )
 
 
+SECRET_LINE = re.compile(r"(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)")
+
+
+def strip_comment(text):
+    """Drop a shell comment: an unquoted # at the start of a word. Keep # inside a word."""
+    # The text follows NAME=, so a # that opens the value is part of it, as in bash.
+    quote, previous = None, "="
+    for index, character in enumerate(text):
+        if quote:
+            if character == quote:
+                quote = None
+        elif character in "'\"":
+            quote = character
+        elif character == "#" and previous.isspace():
+            return text[:index]
+        previous = character
+    return text
+
+
+def read_secrets():
+    """Read NAME=VALUE lines from ~/.secrets. Refuse the file when others can read or own it."""
+    path = Path.home() / ".secrets"
+    try:
+        info = path.stat()
+        if info.st_mode & 0o077:
+            reason = "other users can read it"
+        elif info.st_uid != os.getuid():
+            reason = "another user owns it"
+        else:
+            reason = None
+        text = None if reason else path.read_text()
+    except FileNotFoundError:
+        return {}
+    except (OSError, UnicodeError) as error:
+        reason, text = f"cannot read it ({error.__class__.__name__})", None
+    if text is None:
+        log(f"ignoring {path}: {reason}")
+        return {}
+    secrets = {}
+    for line in text.splitlines():
+        found = SECRET_LINE.fullmatch(line.strip())
+        if not found:
+            continue
+        try:
+            # Quoting only; no shell runs. As in a shell, # starts a comment only at a word start.
+            words = shlex.split(strip_comment(found.group(2)))
+        except ValueError:
+            continue
+        if len(words) <= 1:
+            secrets[found.group(1)] = words[0] if words else ""
+    return secrets
+
+
+def lookup(secrets, names):
+    """Return the named variables. The gateway's own environment wins over secrets."""
+    return {
+        name: os.environ[name] if name in os.environ else secrets[name]
+        for name in names
+        if name in os.environ or name in secrets
+    }
+
+
 class StdioServer:
     """One downstream server that runs as a local program."""
 
-    def __init__(self, name, spec):
+    def __init__(self, name, spec, secrets=None):
         self.name, self.spec = name, spec
+        self.secrets = secrets or {}
         self.process = None
         self.counter = 0
         self.lock = threading.Lock()
 
     def start(self):
         environment = dict(os.environ)
+        environment.update(lookup(self.secrets, self.spec.get("pass_env", [])))
         environment.update(self.spec.get("env", {}))
         self.process = subprocess.Popen(
             [self.spec["command"], *self.spec.get("args", [])],
@@ -121,15 +186,18 @@ class StdioServer:
 class HttpServer:
     """One downstream server reached over the Streamable HTTP transport."""
 
-    def __init__(self, name, spec):
+    def __init__(self, name, spec, secrets=None):
         self.name, self.spec = name, spec
+        self.secrets = secrets or {}
         self.session = None
         self.protocol = None
         self.counter = 0
         self.lock = threading.Lock()
 
     def start(self):
-        environment = dict(os.environ)
+        declared = [*self.spec.get("header_env", {}).values()]
+        declared += [self.spec["bearer_token_env"]] if self.spec.get("bearer_token_env") else []
+        environment = {**dict(os.environ), **lookup(self.secrets, declared)}
         headers = {
             key: expand(value, environment) for key, value in self.spec.get("headers", {}).items()
         }
@@ -223,9 +291,10 @@ def served_name(server, name, taken):
 class Gateway:
     def __init__(self, config):
         self.servers = {}
+        secrets = read_secrets()  # Read once per gateway start.
         for name, spec in sorted(config.get("servers", {}).items()):
             kind = StdioServer if spec.get("transport", "stdio") == "stdio" else HttpServer
-            self.servers[name] = kind(name, spec)
+            self.servers[name] = kind(name, spec, secrets)
         self.ready = {}
         self.tools, self.prompts, self.resources = {}, {}, {}
 
