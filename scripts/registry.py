@@ -13,6 +13,7 @@ Direct execution without help keeps its existing behavior.
 import datetime
 import fcntl
 import os
+import socket
 from pathlib import Path
 import platform
 import re
@@ -40,7 +41,15 @@ FIELDS = {
     "enrolled": bool,
 }
 # Optional record fields. The machine ID is a record's identity; the hostname is its display name.
-OPTIONAL_FIELDS = {"ssh_target": str, "recorded_at": str, "machine_id": str, "aliases": list}
+# The distro and the host name are displayed facts, never keys. Two WSL distros share a host name.
+OPTIONAL_FIELDS = {
+    "ssh_target": str,
+    "recorded_at": str,
+    "machine_id": str,
+    "aliases": list,
+    "distro": str,
+    "system_hostname": str,
+}
 MACHINE_ID = ".fleet/machine-id"
 IDENTIFIER = re.compile(r"[0-9a-f]{32}")
 NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*")
@@ -136,7 +145,12 @@ def resolve(data, word):
             key
             for key, record in machines.items()
             for field in fields
-            if word == record.get(field) or field == "aliases" and word in record.get(field, [])
+            if word == record.get(field)
+            or field == "aliases"
+            and word in record.get(field, [])
+            # A sibling answers to its distro name as well as to its wsl: target.
+            or field == "ssh_target"
+            and record.get(field) == "wsl:" + word
         )
         if len(found) > 1:
             raise ValueError(f"{word} matches several members: {', '.join(found)}. Use one key.")
@@ -181,7 +195,117 @@ def machine(home, manager_version, fallback=None):
         "enrolled": profile_path.exists(),
         "ssh_target": "",
         "machine_id": machine_id(home),
+        "distro": os.environ.get("WSL_DISTRO_NAME", ""),
+        "system_hostname": socket.gethostname(),
     }
+
+
+def save_name(home, name):
+    """Save the name chosen at enrollment. Never rename: a different saved name stops this."""
+    if not NAME.fullmatch(name or ""):
+        raise ValueError("A machine name uses letters, digits, dots, hyphens, and underscores.")
+    saved = run_index.saved_name(home)
+    if (home / ".fleet/profile.toml").exists():
+        # An enrollment from before saved names is named by the name it reports now.
+        current = saved or run_index.machine_name()
+        if name != current:
+            raise ValueError(f"This machine is already named {current}. Fleet never renames it.")
+    # A first enrollment that stopped before its profile may choose again.
+    if saved != name:
+        path = home / run_index.NAME_FILE
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        atomic(path, name + "\n")
+    return name
+
+
+def sanitized(text):
+    """Lowercase TEXT. Spaces and underscores become hyphens; other symbols go."""
+    text = re.sub(r"[\s_]+", "-", text.strip().lower())
+    return re.sub(r"[^a-z0-9.-]", "", text).strip("-.")
+
+
+# A Windows default host name starts with one of these words, so its first part says nothing.
+GENERIC_HOSTS = ("desktop", "laptop", "pc", "win")
+
+
+def taken_names(home):
+    """Return the names that other machine IDs use in this machine's registry."""
+    own = machine_id(home)
+    try:
+        machines = load(home)["machines"]
+    except (OSError, ValueError):
+        return set()
+    return {
+        key
+        for key, record in machines.items()
+        if record.get("machine_id") and record.get("machine_id") != own
+    }
+
+
+def proposed_name(distro=None, release=Path("/etc/os-release"), hostname=None, home=None):
+    """Propose a WSL name: host, distro and version, then scope, such as dell-ubuntu-26.04-alertventure.
+
+    The scope is the WSL distro's own name unless it equals the base distro and version.
+    A name that another machine ID uses gets -2, then -3, until it is free.
+    """
+    distro = os.environ.get("WSL_DISTRO_NAME", "") if distro is None else distro
+    hostname = socket.gethostname() if hostname is None else hostname
+    facts = {}
+    try:
+        for line in release.read_text().splitlines():
+            key, _, item = line.partition("=")
+            facts[key] = item.strip().strip('"')
+    except OSError:
+        pass
+    host = sanitized(re.split(r"[-.]", hostname)[0])
+    if host in GENERIC_HOSTS:
+        host = sanitized(hostname)
+    base = "-".join(
+        part
+        for part in (sanitized(facts.get("ID", "")), sanitized(facts.get("VERSION_ID", "")))
+        if part
+    )
+    scope = sanitized(distro)
+    if scope == base:
+        scope = ""
+    name = "-".join(part for part in (host, base, scope) if part) or sanitized(hostname)
+    taken = taken_names(home) if home is not None else set()
+    candidate, number = name, 2
+    while candidate in taken:
+        candidate, number = f"{name}-{number}", number + 1
+    return candidate
+
+
+def backfill(home):
+    """Save the current name and facts of an existing enrollment. Change nothing else.
+
+    An enrollment from before names were chosen keeps its name: the name it reports now.
+    """
+    if not (home / ".fleet/profile.toml").exists():
+        return
+    if not run_index.saved_name(home) and not os.environ.get("FLEET_MACHINE_NAME"):
+        save_name(home, machine_name())
+    path = home / REGISTRY
+    if not path.exists():
+        return
+    facts = {
+        "distro": os.environ.get("WSL_DISTRO_NAME", ""),
+        "system_hostname": socket.gethostname(),
+    }
+    descriptor = os.open(path.parent / ".fleet.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        data = load(home)
+        record = data["machines"].get(machine_name())
+        changed = {
+            key: item
+            for key, item in facts.items()
+            if item and record and record.get(key, "") != item
+        }
+        if not changed:
+            return
+        record.update(changed)
+        atomic(path, serialize(data))
 
 
 def serialize(data):
@@ -209,6 +333,9 @@ def refresh(home, manager_version, backup, result, fallback=None, *, run_record=
     path = home / REGISTRY
     if not path.parent.resolve().is_relative_to(home.resolve()):
         raise ValueError("Fleet registry parent leaves HOME. Keep the manager store inside HOME.")
+    if not run_index.saved_name(home) and not os.environ.get("FLEET_MACHINE_NAME"):
+        # The first recorded run saves the name, so a later host name change renames nothing.
+        save_name(home, machine_name())
     current = machine(home, manager_version, fallback)
     current.update(
         last_run=datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
@@ -292,7 +419,9 @@ LEGACY_DIGEST_FIELDS = (
     "recorded_at",
 )
 # The exchange carries the complete record. The SSH target stays with each viewer.
+# The distro and the host name stay local facts. A viewer learns them when it meets a sibling.
 EXCHANGED = (*FIELDS, "machine_id", "aliases", "recorded_at")
+LOCAL_FACTS = ("distro", "system_hostname")
 
 
 def fact_time(record):
@@ -555,6 +684,14 @@ def entities(home, manager_version):
                 "enrolled" if record["enrolled"] else "not enrolled" if known else "not recorded",
             ),
             ("OS", record.get("os")),
+            ("Distro", record.get("distro")),
+            # The host name is a fact. Two WSL distros on one host report the same one.
+            (
+                "Hostname",
+                record.get("system_hostname")
+                if record.get("system_hostname") not in ("", None, key)
+                else None,
+            ),
             (
                 "Domain",
                 (record["domain"] + (" · chosen" if record["domain_chosen"] else " · UNCHOSEN"))
@@ -577,11 +714,14 @@ def entities(home, manager_version):
         summary = [
             "this machine" if key == local else None,
             record.get("os"),
+            record.get("distro"),
             (record["domain"] + ("" if record["domain_chosen"] else " UNCHOSEN"))
             if record["domain"]
             else None,
             "Fleet " + record["manager_version"] if record.get("manager_version") else None,
-            "ssh " + target if target else "no connection",
+            (target if target.startswith("wsl:") else "ssh " + target)
+            if target
+            else "no connection",
             (record["result"] + " " + record["last_run"][:10]).strip()
             if record["result"] and record["result"] != "not recorded"
             else None,

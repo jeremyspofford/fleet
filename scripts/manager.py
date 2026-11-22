@@ -477,6 +477,42 @@ def validate_profile(home, profile, defaults=False, configure=False, checkout=No
     return warnings
 
 
+def ask_machine_name(home):
+    """Ask for this WSL distro's fleet name once, then save the accepted answer."""
+    import registry
+
+    detail = "\n".join(
+        [
+            "Name this WSL distro in the fleet. Other machines list it by this name.",
+            "Fleet proposed host, distro, version, and scope from this distro. "
+            "Type another name to change it.",
+            "Use letters, digits, dots, hyphens, and underscores. "
+            "Fleet never renames a machine later.",
+            "Press Enter to accept the proposed name.",
+        ]
+    )
+    proposed = registry.proposed_name(home=home)
+    while True:
+        answer = ask("Machine name", proposed, detail=detail, heading="Machine name")
+        if not registry.NAME.fullmatch(answer):
+            print("Use letters, digits, dots, hyphens, and underscores.")
+        elif answer in registry.taken_names(home):
+            print(f"{answer} belongs to another machine. Choose another name.")
+        else:
+            registry.save_name(home, answer)
+            return answer
+
+
+def register_siblings(home):
+    """Meet the other enrolled WSL distros on this host. A failure here never fails enrollment."""
+    import siblings
+
+    try:
+        siblings.register(home)
+    except (OSError, ValueError, RuntimeError) as error:
+        print(f"Siblings not checked: {error}.")
+
+
 def select_profile(home, args, workspace):
     import enrollment as wizard
 
@@ -503,6 +539,13 @@ def select_profile(home, args, workspace):
     profile.setdefault("pins", {})
     profile.setdefault("secrets", {})
     if args.wizard:
+        if (
+            os.environ.get("WSL_DISTRO_NAME")
+            and not args.machine_name
+            and not run_index.saved_name(home)
+            and not exists
+        ):
+            ask_machine_name(home)
         args.scan_record = {}
         args.found, args.excluded = wizard.welcome(home, sources, profile, args.scan_record)
         profile, checkout, manifest, warnings = wizard.steps(
@@ -1127,6 +1170,11 @@ def parse_arguments(argv):
         "--git-name", help="Git author name; required when missing without a terminal"
     )
     parser.add_argument(
+        "--machine-name",
+        metavar="NAME",
+        help="this machine's fleet name at first enrollment; Fleet never renames a machine",
+    )
+    parser.add_argument(
         "--git-email", help="Git author email; required when missing without a terminal"
     )
     parser.add_argument(
@@ -1175,6 +1223,12 @@ def enroll(args, edit=None, software=None, before_apply=None, manage_tui=False, 
 
     args.edit = edit
     home = Path.home()
+    first = not (home / ".fleet/profile.toml").exists()
+    if args.machine_name:
+        import registry
+
+        # The name is chosen here, on the machine itself. Saving it first lets the run record use it.
+        registry.save_name(home, args.machine_name)
     # Git status must not refresh the real checkout's index before confirmation.
     os.environ["GIT_OPTIONAL_LOCKS"] = "0"
     backup_path = "not created"
@@ -1290,9 +1344,12 @@ def enroll(args, edit=None, software=None, before_apply=None, manage_tui=False, 
             if os.environ.get("DOTFLEET_APPLY_MARKER"):
                 Path(os.environ["DOTFLEET_APPLY_MARKER"]).touch()
             print(f"Backup: {backup_path}", flush=True)
-            return apply_confirmed_plan(
+            code = apply_confirmed_plan(
                 home, checkout, profile, plan, backup_path, account, before_apply, warnings
             )
+            if code == 0 and first:
+                register_siblings(home)
+            return code
     except Exception as error:
         run_index.failure(f"Error: Setup failed: {error}")
         print(f"Error: Setup failed: {error}", file=sys.stderr)

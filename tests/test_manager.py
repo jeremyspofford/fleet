@@ -27,6 +27,8 @@ import dotfiles_library
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
+# Tests see a plain Linux host, as CI does. WSL tests set the distro name themselves.
+os.environ.pop("WSL_DISTRO_NAME", None)
 sys.path.insert(0, str(ROOT / "scripts"))
 from manager import domain_details, exact_version, installed_defaults, validate_profile
 from common import toml

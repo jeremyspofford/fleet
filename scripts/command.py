@@ -1048,10 +1048,14 @@ def update_all(home, args, argument_parser):
     code = run_index.run(home, "update", lambda: dispatch(args, argument_parser, home))
     results = [(this, code, "update succeeded" if code == 0 else f"update failed (exit {code})")]
     print(f"[1/{total}] {this}: {results[0][2]}.")
+    machines = registry.load(home)["machines"]
     for number, name in enumerate(members, 2):
         report = {}
         member_code = remote.execute(home, name, "update", report=report)
-        results.append((name, member_code, report.get("result", f"exit {member_code}")))
+        result = report.get("result", f"exit {member_code}")
+        if connections.is_sibling(machines[name].get("ssh_target")):
+            result += " · sibling dispatch through wsl.exe"
+        results.append((name, member_code, result))
         print(f"[{number}/{total}] {name}: {results[-1][2]}.")
     info(
         "Fleet update · " + str(total) + (" machine" if total == 1 else " machines"),
@@ -1260,6 +1264,8 @@ def dispatch(args, argument_parser, home):
         saved_profile = profile(home)
         display = command_name(saved_profile)
         if args.command == "check":
+            # An enrollment from before saved names keeps its name; check records its facts.
+            registry.backfill(home)
             return updates.check(home, saved_profile, marketplaces=True, tools=True)
         if args.command == "backups" and args.action == "delete":
             import backup_cleanup
@@ -1736,8 +1742,11 @@ def uninstall_machine(home, name):
 
 
 def install_machine(home, args):
-    """Resolve NAME to an SSH target, then run the deploy steps."""
+    """Resolve NAME to an SSH target or a sibling WSL distro, then run the deploy steps."""
     import deploy
+
+    if wsl_install(home, args):
+        return deploy.install(home, args)
 
     data = registry.load(home)["machines"]
     if args.name is None and args.ssh_target is None:
@@ -1765,6 +1774,73 @@ def install_machine(home, args):
     if not supplied and not record and args.name not in connections.hosts(home):
         raise ValueError(f"{args.name} is not a host in your SSH config. Add --target user@host.")
     return deploy.install(home, args)
+
+
+def wsl_install(home, args):
+    """Choose the local WSL path when NAME names a distro on this host. Never guess against SSH.
+
+    Return True when the deploy goes through wsl.exe. Then args holds the wsl: target.
+    """
+    import siblings
+
+    name = args.name or ""
+    wanted = args.ssh_target or ""
+    via = getattr(args, "via", None)
+    explicit = connections.is_sibling(wanted)
+    if via == "ssh" or wanted and not explicit and via != "wsl":
+        # A bare --target keeps its SSH meaning. It names a distro only as wsl:DISTRO or with --via wsl.
+        return False
+    data = registry.load(home)
+    member = registry.resolve(data, name) if name else None
+    recorded = data["machines"].get(member, {}) if member else {}
+    saved = recorded.get("ssh_target", "")
+    available = siblings.distros() if siblings.interop() else []
+    if explicit:
+        distro = wanted[len(connections.WSL) :]
+    elif connections.is_sibling(saved):
+        distro = saved[len(connections.WSL) :]
+    else:
+        distro = siblings.match(wanted or name, available)
+    if not (distro or via == "wsl"):
+        return False
+    if distro and via is None and not explicit and name:
+        # NAME may also reach an SSH host: through the SSH config, or through a saved SSH target.
+        if name in connections.hosts(home):
+            raise ValueError(
+                f"{name} names a WSL distro and an SSH config host. Add --via wsl or --via ssh."
+            )
+        if saved and not connections.is_sibling(saved):
+            raise ValueError(
+                f"{name} names a WSL distro and a saved SSH target. Add --via wsl or --via ssh."
+            )
+    if not siblings.interop():
+        raise ValueError(
+            "wsl.exe is unavailable, so Fleet cannot reach a sibling. Next: "
+            + connections.INTEROP_STEP
+        )
+    if not distro or distro not in available:
+        raise ValueError(f"No WSL distro named {distro or wanted or name}. Run wsl.exe --list.")
+    if recorded.get("enrolled") and member != registry.machine_name():
+        raise ValueError(
+            f"{name} is already a fleet member. Run {current_command(home)} update {member}."
+        )
+    if distro == siblings.own_distro():
+        raise ValueError("This distro is this machine. Choose another distro.")
+    # An explicit NAME that differs from the distro is the new machine's name.
+    if not args.machine_name and name and name.lower() != distro.lower():
+        args.machine_name = name
+    if not args.machine_name and not manager.has_terminal():
+        raise ValueError(
+            "A scripted WSL deploy needs --machine-name; Fleet never names a machine silently."
+        )
+    if args.machine_name and not registry.NAME.fullmatch(args.machine_name):
+        raise ValueError("A machine name uses letters, digits, dots, hyphens, and underscores.")
+    args.name = args.machine_name or distro
+    args.ssh_target = connections.WSL + distro
+    if not args.return_target and siblings.own_distro():
+        # The sibling reaches this distro the same way: through wsl.exe.
+        args.return_target = connections.WSL + siblings.own_distro()
+    return True
 
 
 def set_machine_ssh(home, hostname, target):
