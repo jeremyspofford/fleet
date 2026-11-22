@@ -195,6 +195,8 @@ def check_item(kind, name, spec, entries, domains, catalog, warnings):
         check_type(f"{where}.{key}", value, KEYS[kind][key])
     if "domains" in spec:
         check_strings(where, spec["domains"], label="domain")
+        if "core" in spec["domains"]:
+            fail(where, "core always applies. Omit domains to reach every machine.")
         undeclared = sorted(set(spec["domains"]) - set(domains))
         if undeclared:
             fail(where, "the content does not declare domain " + ", ".join(undeclared))

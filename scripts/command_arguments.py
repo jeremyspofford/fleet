@@ -340,6 +340,13 @@ def normalize(args, parser):
                 if getattr(args, name) is not None:
                     parser.error("Do not combine a flagged value with its old positional form.")
                 setattr(args, name, value)
+    if args.command == "tools" and args.action == "set":
+        import manager
+
+        if not args.tool or args.tool.startswith("-") or not manager.exact_version(args.version):
+            parser.error(
+                "tools set needs TOOL --version VERSION with an exact version, such as 24.14.1"
+            )
     if args.command == "tools" and args.action in ("set", "remove"):
         args.pin = args.tool + "@" + args.version if args.action == "set" else args.tool
     return args

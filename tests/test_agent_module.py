@@ -96,7 +96,7 @@ class AgentModuleTests(unittest.TestCase):
             tomllib.loads((self.home / ".codex/config.toml").read_text()), {"model": "o3"}
         )
 
-    def test_a_hand_written_value_stops_enrollment_before_backup(self):
+    def test_a_hand_written_value_stays_and_enrollment_continues(self):
         self.enroll()
         (self.home / ".codex").mkdir()
         (self.home / ".codex/config.toml").write_text(
@@ -115,11 +115,14 @@ class AgentModuleTests(unittest.TestCase):
             capture_output=True,
         )
         result = " ".join((process.stdout + process.stderr).split())
-        self.assertEqual(process.returncode, 1, result)
+        # Owner ruling 2026-11-20, point 1: the user's value stays and the run continues.
+        self.assertEqual(process.returncode, 0, result)
         self.assertIn(
-            "connectors.calendar in ~/.codex/config.toml differs from the rendered value", result
+            "connectors.calendar in ~/.codex/config.toml holds your own value;"
+            " Fleet leaves it and stopped managing it.",
+            result,
         )
-        self.assertEqual(sorted((self.home / ".fleet/backups").iterdir()), backups)
+        self.assertGreater(len(list((self.home / ".fleet/backups").iterdir())), len(backups))
         self.assertIn("mine.example.com", (self.home / ".codex/config.toml").read_text())
 
     def test_declared_plugins_reach_claude_through_its_own_listing(self):
@@ -178,11 +181,15 @@ class AgentModuleTests(unittest.TestCase):
         )
         self.assertIn("present; run dotfleet diff", self.cli("status"))
         self.assertIn("FAIL", self.cli("doctor", expected=1))
-        stopped = " ".join(self.cli("update", expected=1).split())
+        # Owner ruling 2026-11-20, point 1: the update keeps the user's value and continues.
+        updated = " ".join(self.cli("update").split())
         self.assertIn(
-            "connectors.calendar in ~/.codex/config.toml changed since Fleet wrote it", stopped
+            "connectors.calendar in ~/.codex/config.toml holds your own value;"
+            " Fleet leaves it and stopped managing it.",
+            updated,
         )
-        self.assertIn("agents set --name ITEM --state local", stopped)
+        self.assertIn("my.example.com", config_path.read_text())
+        self.assertIn("Drift             none", self.cli("status"))
 
         self.cli("agents", "set", "--name", "connectors.calendar", "--state", "local")
         self.assertIn("my.example.com", config_path.read_text())

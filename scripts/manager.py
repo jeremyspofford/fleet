@@ -37,12 +37,13 @@ import sys
 import ui_channel
 import tui_environment
 import tempfile
+import tomllib
 import textwrap
 
 from common import atomic, bash, read_toml, relative, run, toml, toml_tables
 from command_display import command_name
 from render_run import change_marker
-from convert import GENERATED, convert, detect, source_name, tracked
+from convert import MISE, RESERVED, USER_MISE, convert, detect, source_name, tracked
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_REPO = dotfiles_library.DEFAULT_REPO
@@ -727,6 +728,53 @@ def installed_defaults(defaults, pins, home):
     return effective, available
 
 
+def mise_handover(home, generated):
+    """Return the user's own entries in the Mise config Fleet wrote before, as TOML bytes.
+
+    Entries equal to what Fleet wrote leave with Fleet. Entries the user added or changed, for
+    example with mise use -g, stay. Return b"" when none remain, and None when no file exists.
+    """
+    path = home / USER_MISE
+    if not path.is_file() or path.is_symlink():
+        return None
+    current = read_toml(path)
+    written = home / ".fleet/chezmoi-source" / source_name(USER_MISE)
+    previous = (
+        read_toml(written)
+        if written.is_file()
+        else tomllib.loads(generated.get(MISE, b"").decode() or "")
+    )
+    residue = {}
+    for table, values in current.items():
+        before = previous.get(table)
+        if isinstance(values, dict):
+            before = before if isinstance(before, dict) else {}
+            kept = {key: item for key, item in values.items() if before.get(key) != item}
+            if kept:
+                residue[table] = kept
+        elif before != values:
+            residue[table] = values
+    return toml_tables(residue).encode() if residue else b""
+
+
+def hand_over_mise(home, content, backup_path):
+    """Leave the global Mise config to the user, with only the user's own entries."""
+    path = home / USER_MISE
+    if content:
+        atomic(path, content, path.stat().st_mode & 0o777)
+        print(
+            "Mise: ~/.config/mise/config.toml keeps only your own entries, and they take"
+            " precedence. Fleet's pins moved to ~/.config/mise/conf.d/fleet.toml."
+        )
+    else:
+        retired = backup_path / "retired" / USER_MISE
+        retired.parent.mkdir(parents=True, exist_ok=True)
+        path.rename(retired)
+        print("Mise: Fleet's pins moved to ~/.config/mise/conf.d/fleet.toml.")
+    # chezmoi forgets the file, so a later mise use -g is never a conflict.
+    run("chezmoi", "state", "delete", "--bucket=entryState", "--key=" + str(path))
+
+
 def fingerprint(path):
     if path.is_symlink():
         return {"link": os.readlink(path)}
@@ -843,7 +891,7 @@ def generated_files(home, profile, manifest, defaults):
         {
             ".config/git/local.gitconfig": identity,
             ".config/dotfiles/domain": (profile["domain"] + "\n").encode(),
-            ".config/mise/config.toml": toml_tables(mise).encode(),
+            MISE: toml_tables(mise).encode(),
             ".secrets": secrets,
         },
         pins,
@@ -933,19 +981,29 @@ def prepare(home, checkout, profile, manifest, folder, preview=False, switching=
                 ).split("\0"),
             )
         )
-        if names & GENERATED:
+        if names & RESERVED:
             raise ValueError(
                 "Native content owns a manager-reserved path: "
-                + ", ".join(sorted(names & GENERATED))
+                + ", ".join(sorted(names & RESERVED))
             )
     else:
         names = set(items)
+        if profile.get("adopted") and USER_MISE in items:
+            # Adoption preserves authored bytes, including existing Mise settings and tools.
+            del generated[MISE]
+            pins = defaults.get("tools", {})
+        elif USER_MISE in items:
+            # Content's Mise config supplies defaults only. The live file stays the user's.
+            _, mode = items[USER_MISE]
+            authored = source / source_name(USER_MISE, mode)
+            for old_target in (authored, authored.with_name("empty_" + authored.name)):
+                if old_target.exists() or old_target.is_symlink():
+                    old_target.unlink()
+            names.discard(USER_MISE)
         for name, content in list(generated.items()):
             if profile.get("adopted") and name in items:
-                # Adoption preserves authored bytes, including existing Mise settings.
+                # Adoption preserves authored bytes.
                 del generated[name]
-                if name == ".config/mise/config.toml":
-                    pins = defaults.get("tools", {})
                 continue
             if name in items:
                 _, mode = items[name]
@@ -976,6 +1034,13 @@ def prepare(home, checkout, profile, manifest, folder, preview=False, switching=
     state_path = home / ".fleet/outputs.json"
     previous = json.loads(state_path.read_text()) if state_path.exists() else {}
     stale = set(previous) - names - set(generated)
+    # Fleet wrote its pins to the global Mise config before. That file is handed to the user.
+    # Fleet wrote its pins to the global Mise config before, and a first enrollment carries the
+    # pins of an existing one. Either way the file is handed to the user, keeping their entries.
+    first = not previous and (home / USER_MISE).is_file()
+    handed = (USER_MISE in stale or first) and USER_MISE not in names and MISE in generated
+    handover = mise_handover(home, generated) if handed else None
+    stale.discard(USER_MISE)
     kept = set()
     for name in stale:
         if fingerprint(home / name) not in (None, previous[name]):
@@ -1027,6 +1092,8 @@ def prepare(home, checkout, profile, manifest, folder, preview=False, switching=
         for relative in wizard.agent_manifest()[agent].get("plugin_files", [])
     }
     changed |= {name for name in stale if fingerprint(home / name) is not None}
+    if handover is not None:
+        changed.add(USER_MISE)
     controls = {
         ".fleet/marketplaces.json",
         ".fleet/registry.toml",
@@ -1081,6 +1148,7 @@ def prepare(home, checkout, profile, manifest, folder, preview=False, switching=
         pins=pins,
         available=available,
         stale=stale,
+        mise_handover=handover,
         kept=sorted(kept),
         all_paths=all_paths,
         changed=changed,
@@ -1146,6 +1214,19 @@ def wizard_catalog():
     return wizard.agent_manifest()
 
 
+def kept_files_message(status):
+    """Name each differing file and the command that takes Fleet's version."""
+    paths = [line[3:] for line in status.splitlines() if len(line) > 3]
+    shown = ", ".join("~/" + path for path in paths)
+    commands = " ".join("~/" + shlex.quote(path) for path in paths)
+    return (
+        f"Managed files still differ after the apply: {shown}. "
+        "A local edit was kept at the conflict prompt. "
+        f"To take Fleet's version, run: chezmoi apply --force {commands}. "
+        "This run's backup holds your edited copy."
+    )
+
+
 def apply_confirmed_plan(
     home, checkout, profile, plan, backup_path, account, before_apply, warnings
 ):
@@ -1201,6 +1282,8 @@ def apply_confirmed_plan(
         # This deletion was requested by the group selection, not a local edit.
         # Retire only this path's remembered entry; preserve all other conflict state.
         run("chezmoi", "state", "delete", "--bucket=entryState", "--key=" + str(path))
+    if plan.get("mise_handover") is not None:
+        hand_over_mise(home, plan["mise_handover"], backup_path)
     import marketplaces
 
     if marketplaces.PENDING:
@@ -1219,7 +1302,7 @@ def apply_confirmed_plan(
     run_index.stage("verify")
     status = run("chezmoi", "status")
     if status.strip():
-        raise ValueError("Managed files still differ:\n" + status)
+        raise ValueError(kept_files_message(status))
     # Record the applied profile. A later saved-only change then triggers an update.
     record = json.loads((home / RECORD).read_text())
     record["profile_sha256"] = hashlib.sha256(
