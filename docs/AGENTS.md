@@ -23,7 +23,7 @@ Updates change the tree. Each agent gets one pointer to the tree, set once:
 
 | Agent | Pointer | Contents |
 | --- | --- | --- |
-| claude | `~/.claude/skills/fleet` links to the tree's plugin folder. `~/.claude/rules/fleet.md` links to its rule file. | The gateway entry, connectors, hooks, and a link to `~/.agents/skills`. |
+| claude | `~/.claude/skills/fleet` links to the tree's plugin folder. Each skill gets `~/.claude/skills/NAME`, linked to `~/.agents/skills/NAME`. `~/.claude/rules/fleet.md` links to its rule file. | The gateway entry, connectors, and hooks. |
 | gemini | `~/.gemini/extensions/fleet` links to the tree's extension folder. | The gateway entry, connectors, hooks, and a `GEMINI.md` rule file. |
 | codex | Skills: Codex reads `~/.agents/skills` itself. Servers: one gateway entry in `~/.codex/config.toml`. | Owned connector entries and hook entries in `~/.codex/hooks.json`. |
 | opencode | Skills: OpenCode reads `~/.agents/skills` itself. Rules: one `instructions` entry names the tree's rule file. Servers: one gateway entry. | Owned connector entries in `~/.config/opencode/opencode.json`. |
@@ -35,6 +35,8 @@ Codex, OpenCode, Pi, and Antigravity accept no pointer for servers or hooks. The
 An owned entry is one named value that Fleet writes inside a file that the agent also writes.
 
 Claude Code loads the plugin folder as `fleet@skills-dir`. Its servers appear as `plugin:fleet:NAME`.
+Each skill keeps its own name, `/NAME`, as in every other agent. Claude Code 2.1.259 listed a linked skill that way in a test on 2026-11-22.
+A skill folder may not be named `fleet`, because Fleet's plugin link uses that name.
 A permission rule that names one of those tools must use the longer plugin name.
 The tree belongs to Fleet. An update replaces hand edits there after the backup copies them.
 
@@ -64,7 +66,10 @@ That wrapper starts `scripts/gateway.py` in the manager with the agent's gateway
 The gateway starts each downstream server on demand. It serves their tools and prompts as `SERVER__NAME`.
 It serves their resources for reading only. A server that fails to start is skipped; the others keep working.
 Downstream stdio servers start with the gateway's environment plus their `env` values.
-The gateway entry passes each variable that a downstream server reads, in the agent's own reference form, such as `${NAME}` or `{env:NAME}`.
+The gateway entry names no variable. The gateway reads `~/.secrets` itself, so a new server changes no agent settings file.
+Each server gets only the `pass_env`, `header_env`, and `bearer_token_env` values it declares. A variable in the gateway's own environment wins.
+The gateway reads `export NAME=VALUE` and `NAME=VALUE` lines with shell quoting rules. It runs nothing.
+It refuses a `~/.secrets` that another user can read or owns, and logs one line without any value. A missing file is no error.
 Antigravity expands no reference. Its servers inherit its environment, so its entry names no variable.
 Fleet never writes a secret value. The wrapper finds `python3` through the agent's `PATH`.
 Hooks, plugins, settings, and skill folders stay on files.
@@ -150,7 +155,8 @@ Next steps names each agent's step in the run that first writes the listing.
 A Claude Code marketplace that names `owner/repo` becomes a GitHub source. A URL becomes a Git source; an absolute path becomes a folder source.
 
 Codex and Gemini CLI still run their installers. Fleet's review is the consent step; Gemini CLI's own confirmation is skipped with `--consent`.
-Gemini CLI still asks to trust a local-path source, so an unattended install from a local path fails.
+Gemini CLI asks to trust a local-path source, so Fleet never installs one. Each run lists the install command as a manual step.
+A local source starts with `/`, `~`, or `.`, or names an existing folder. Once you install it, the plugin is yours.
 The run account lists installer runs under Software. Backups copy each agent's settings file first.
 Fleet runs no other agent command to write settings.
 
@@ -159,6 +165,11 @@ A removed declaration or a domain change removes the plugin. Turning an agent of
 The `local` exception releases a plugin: it stays installed, and Fleet stops managing it.
 A failed installer stops the run. The inventory records only completed installs and removals.
 Earlier releases ran installers for Claude Code, OpenCode, and Pi. The next update releases those records without uninstalling, then writes the listing.
+
+`fleet uninstall` uninstalls the Codex and Gemini CLI plugins that the inventory records. The review lists each one under Software.
+Removing Fleet's listing entries uninstalls the Claude Code, OpenCode, and Pi plugins. A plugin that Fleet never recorded stays.
+A `local` exception keeps its plugin. Uninstall never removes a marketplace.
+A missing agent command or a failed removal prints one line. Uninstall then removes everything else.
 
 ## Ownership, drift, and removal
 

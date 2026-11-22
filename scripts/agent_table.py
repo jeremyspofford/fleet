@@ -226,6 +226,9 @@ def check_item(kind, name, spec, entries, domains, catalog, warnings):
 
 def load(checkout, manifest, catalog):
     """Validate the whole table before any plan or write. One failure stops the run."""
+    if "fleet" in skills(checkout):
+        # Fleet's own Claude Code plugin uses the link ~/.claude/skills/fleet.
+        fail("skills.fleet", "the name fleet is reserved for Fleet; rename the skill folder")
     table = manifest.get("agents")
     if table is None:
         return Table([], [])
