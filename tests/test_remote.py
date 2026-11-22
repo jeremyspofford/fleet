@@ -415,5 +415,28 @@ class RequestTests(unittest.TestCase):
             self.assertIn("Only status", output.getvalue())
 
 
+class MemberValidationTests(unittest.TestCase):
+    """A newer member may send a field this version does not know."""
+
+    def test_an_unknown_member_field_is_dropped_not_fatal(self):
+        member = {
+            "hostname": "newer-box",
+            "enrolled": True,
+            "recorded_at": "2026-11-22T00:00:00+00:00",
+            "machine_id": "e" * 32,
+            "future_field": "a value from a later Fleet",
+        }
+        accepted = remote.validate_member(member)
+        self.assertNotIn("future_field", accepted)
+        self.assertEqual(accepted["hostname"], "newer-box")
+        self.assertEqual(accepted["machine_id"], "e" * 32)
+        digest = remote.validate_digest({"members": [dict(member)], "removed": {}})
+        self.assertEqual(len(digest["members"]), 1)
+        self.assertNotIn("future_field", digest["members"][0])
+        # A known field with a wrong type still fails.
+        with self.assertRaisesRegex(ValueError, "Invalid member"):
+            remote.validate_member(dict(member, enrolled="yes"))
+
+
 if __name__ == "__main__":
     unittest.main()
