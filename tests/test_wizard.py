@@ -171,6 +171,7 @@ class WizardTests(unittest.TestCase):
         self.defaults_origin()
         self.env["WSL_DISTRO_NAME"] = "AlertVenture"
         self.env.pop("FLEET_MACHINE_NAME", None)
+        (self.home / ".fleet/machine-name").unlink()
         answers = [
             (b"Machine name [", b"bad name!\n"),
             (b"Machine name [", b"dell-wsl-alertventure\n"),
@@ -191,6 +192,7 @@ class WizardTests(unittest.TestCase):
         self.defaults_origin()
         self.env["WSL_DISTRO_NAME"] = "AlertVenture"
         self.env.pop("FLEET_MACHINE_NAME", None)
+        (self.home / ".fleet/machine-name").unlink()
         other = registry.blank("other-box") | {"enrolled": True, "machine_id": "d" * 32}
         data = {"schema_version": 1, "machines": {"other-box": other}, "removed": {}}
         atomic(self.home / registry.REGISTRY, registry.serialize(data))

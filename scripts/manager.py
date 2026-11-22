@@ -478,13 +478,13 @@ def validate_profile(home, profile, defaults=False, configure=False, checkout=No
 
 
 def ask_machine_name(home):
-    """Ask for this WSL distro's fleet name once, then save the accepted answer."""
+    """Ask for this machine's fleet name once, then save the accepted answer."""
     import registry
 
     detail = "\n".join(
         [
-            "Name this WSL distro in the fleet. Other machines list it by this name.",
-            "Fleet proposed host, distro, version, and scope from this distro. "
+            "Name this machine in the fleet. Other machines list it by this name.",
+            "Fleet proposed a name from this machine's host and system. "
             "Type another name to change it.",
             "Use letters, digits, dots, hyphens, and underscores. "
             "Fleet never renames a machine later.",
@@ -496,11 +496,115 @@ def ask_machine_name(home):
         answer = ask("Machine name", proposed, detail=detail, heading="Machine name")
         if not registry.NAME.fullmatch(answer):
             print("Use letters, digits, dots, hyphens, and underscores.")
+        elif registry.version_conflict(answer):
+            print(registry.version_conflict(answer))
         elif answer in registry.taken_names(home):
             print(f"{answer} belongs to another machine. Choose another name.")
         else:
             registry.save_name(home, answer)
             return answer
+
+
+def name_needed(home, args, first):
+    """A first enrollment needs a name, unless one is saved or FLEET_MACHINE_NAME sets it."""
+    return (
+        first
+        and not args.machine_name
+        and not run_index.saved_name(home)
+        and not os.environ.get("FLEET_MACHINE_NAME")
+    )
+
+
+def choose_name(home, args, first):
+    """Save the machine name before any other step. Return True when the run must stop.
+
+    The name is chosen on the machine itself: --machine-name, or the prompt with a proposal.
+    Without a terminal and without a name, the run stops; Fleet never names a machine silently.
+    """
+    import registry
+
+    stages = run_index.install_stages(home)
+    if "detect" in stages and run_index.saved_name(home) and not args.machine_name:
+        print(f"Detect: done earlier; machine name {run_index.saved_name(home)}.")
+        if first:
+            run_index.complete_stage(home, "detect", dict(stages["detect"], earlier=True))
+        return False
+    if args.machine_name:
+        conflict = registry.version_conflict(args.machine_name)
+        if conflict:
+            print("Error: " + conflict, file=sys.stderr)
+            return True
+        # The name is chosen here, on the machine itself. Saving it first lets the run record use it.
+        registry.save_name(home, args.machine_name)
+    elif name_needed(home, args, first):
+        if not has_terminal():
+            example = registry.proposed_name(home=home)
+            print(
+                "Error: A first enrollment needs a machine name."
+                f" Add --machine-name NAME, such as {example}.",
+                file=sys.stderr,
+            )
+            return True
+        ask_machine_name(home)
+    if first and run_index.saved_name(home):
+        facts = registry.release_facts()
+        run_index.complete_stage(
+            home,
+            "detect",
+            {
+                "system": registry.os_name(),
+                "distro": os.environ.get("WSL_DISTRO_NAME", ""),
+                "release": {key: facts[key] for key in ("ID", "VERSION_ID") if key in facts},
+                "name": run_index.saved_name(home),
+            },
+        )
+    return False
+
+
+def verify_enrollment(home, profile):
+    """Run fleet check after a first enrollment. A failed check leaves the enrollment complete.
+
+    Return the check's result line and the automated, skipped, and manual items.
+    """
+    import contextlib
+    import io
+
+    import updates
+    from command_display import command_name
+
+    display = command_name(profile)
+    stages = run_index.install_stages(home)
+    skipped = [stage for stage in ("detect",) if stage in stages and stages[stage].get("earlier")]
+    run_index.complete_stage(home, "software")
+    run_index.complete_stage(home, "enrollment")
+    error = io.StringIO()
+    try:
+        with contextlib.redirect_stderr(error):
+            code = updates.check(home, profile, display=False)
+    except Exception as failure:  # A failed check never fails a completed enrollment.
+        code = 2
+        error.write(str(failure))
+    if code == 2:
+        reason = " ".join(error.getvalue().split()) or "the check could not finish"
+        result = f"{display} check failed: {reason} Repeat it with {display} check."
+        manual = [f"{display} check"]
+    else:
+        result = f"{display} check: " + (
+            "manager and content are current."
+            if code == 0
+            else f"updates available; run {display} update."
+        )
+        manual = []
+        run_index.complete_stage(home, "verify")
+    automated = (["software", "files"] if skipped else ["machine name", "software", "files"]) + (
+        ["check"] if code != 2 else []
+    )
+    return {
+        "check": result,
+        "automated": automated,
+        "skipped": ["machine name, chosen earlier"] if skipped else [],
+        "manual": manual,
+    }
 
 
 def register_siblings(home):
@@ -539,13 +643,6 @@ def select_profile(home, args, workspace):
     profile.setdefault("pins", {})
     profile.setdefault("secrets", {})
     if args.wizard:
-        if (
-            os.environ.get("WSL_DISTRO_NAME")
-            and not args.machine_name
-            and not run_index.saved_name(home)
-            and not exists
-        ):
-            ask_machine_name(home)
         args.scan_record = {}
         args.found, args.excluded = wizard.welcome(home, sources, profile, args.scan_record)
         profile, checkout, manifest, warnings = wizard.steps(
@@ -1134,6 +1231,8 @@ def apply_confirmed_plan(
         home / ".fleet/outputs.json",
         json.dumps({name: fingerprint(home / name) for name in sorted(names)}, indent=2) + "\n",
     )
+    if getattr(account, "first_enrollment", False):
+        account.enrollment = verify_enrollment(home, profile)
     return account.finish("SUCCESS", warnings, "CLEAN (no differences)")
 
 
@@ -1224,11 +1323,8 @@ def enroll(args, edit=None, software=None, before_apply=None, manage_tui=False, 
     args.edit = edit
     home = Path.home()
     first = not (home / ".fleet/profile.toml").exists()
-    if args.machine_name:
-        import registry
-
-        # The name is chosen here, on the machine itself. Saving it first lets the run record use it.
-        registry.save_name(home, args.machine_name)
+    if choose_name(home, args, first):
+        return 1
     # Git status must not refresh the real checkout's index before confirmation.
     os.environ["GIT_OPTIONAL_LOCKS"] = "0"
     backup_path = "not created"
@@ -1251,6 +1347,7 @@ def enroll(args, edit=None, software=None, before_apply=None, manage_tui=False, 
             os.environ["MISE_CACHE_DIR"] = str(workspace / "mise-cache")
             os.environ["MISE_STATE_DIR"] = str(workspace / "mise-state")
             account = RunAccount(home, ROOT)
+            account.first_enrollment = first
             if manage_tui:
                 account.software.append(tui_environment.software(home, ROOT))
             if software:

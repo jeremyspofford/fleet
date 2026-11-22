@@ -242,14 +242,8 @@ def taken_names(home):
     }
 
 
-def proposed_name(distro=None, release=Path("/etc/os-release"), hostname=None, home=None):
-    """Propose a WSL name: host, distro and version, then scope, such as dell-ubuntu-26.04-alertventure.
-
-    The scope is the WSL distro's own name unless it equals the base distro and version.
-    A name that another machine ID uses gets -2, then -3, until it is free.
-    """
-    distro = os.environ.get("WSL_DISTRO_NAME", "") if distro is None else distro
-    hostname = socket.gethostname() if hostname is None else hostname
+def release_facts(release=Path("/etc/os-release")):
+    """Read ID and VERSION_ID from os-release. A missing file gives no facts."""
     facts = {}
     try:
         for line in release.read_text().splitlines():
@@ -257,23 +251,60 @@ def proposed_name(distro=None, release=Path("/etc/os-release"), hostname=None, h
             facts[key] = item.strip().strip('"')
     except OSError:
         pass
+    return facts
+
+
+def proposed_name(
+    distro=None, release=Path("/etc/os-release"), hostname=None, home=None, system=None
+):
+    """Propose a machine name from its host and platform. The user may edit it at the prompt.
+
+    WSL: host, distro and version, then scope, such as dell-ubuntu-26.04-alertventure.
+    The scope is the WSL distro's own name unless it equals the base distro and version.
+    Linux: host and distro, such as dell-fedora. macOS: host-macos. Windows: host-windows.
+    A name that another machine ID uses gets -2, then -3, until it is free.
+    """
+    distro = os.environ.get("WSL_DISTRO_NAME", "") if distro is None else distro
+    hostname = socket.gethostname() if hostname is None else hostname
+    if system is None:
+        system = "WSL" if distro else {"Darwin": "macOS"}.get(platform.system(), platform.system())
+    facts = release_facts(release) if system in ("WSL", "Linux") else {}
     host = sanitized(re.split(r"[-.]", hostname)[0])
     if host in GENERIC_HOSTS:
         host = sanitized(hostname)
-    base = "-".join(
-        part
-        for part in (sanitized(facts.get("ID", "")), sanitized(facts.get("VERSION_ID", "")))
-        if part
-    )
-    scope = sanitized(distro)
-    if scope == base:
-        scope = ""
-    name = "-".join(part for part in (host, base, scope) if part) or sanitized(hostname)
+    if system == "WSL":
+        base = "-".join(
+            part
+            for part in (sanitized(facts.get("ID", "")), sanitized(facts.get("VERSION_ID", "")))
+            if part
+        )
+        scope = sanitized(distro)
+        parts = (host, base, "" if scope == base else scope)
+    elif system == "Linux":
+        parts = (host, sanitized(facts.get("ID", "")))
+    else:
+        parts = (host, sanitized(system))
+    name = "-".join(part for part in parts if part) or sanitized(hostname)
     taken = taken_names(home) if home is not None else set()
     candidate, number = name, 2
     while candidate in taken:
         candidate, number = f"{name}-{number}", number + 1
     return candidate
+
+
+def version_conflict(name, release=Path("/etc/os-release")):
+    """Return a reason when NAME holds this distro's ID with another version, else ""."""
+    facts = release_facts(release)
+    distro, version = sanitized(facts.get("ID", "")), facts.get("VERSION_ID", "")
+    if not distro or not version:
+        return ""
+    for found in re.finditer(rf"(?:^|-){re.escape(distro)}-(\d+(?:\.\d+)*)(?=-|$)", name.lower()):
+        if found.group(1) != version:
+            return (
+                f"{name} names {distro} {found.group(1)}, but this machine runs"
+                f" {distro} {version}. Choose another name."
+            )
+    return ""
 
 
 def backfill(home):

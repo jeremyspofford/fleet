@@ -50,7 +50,7 @@ jobs:
           export HOME="$RUNNER_TEMP/cold-home"
           mkdir -p "$HOME"
           for attempt in first second; do
-            bash manager/install.sh --repo "$GITHUB_WORKSPACE/content" --defaults --domain core --git-name "Container Test" --git-email container@example.invalid > "$RUNNER_TEMP/install-$attempt.log" 2>&1
+            bash manager/install.sh --repo "$GITHUB_WORKSPACE/content" --defaults --machine-name container-test --domain core --git-name "Container Test" --git-email container@example.invalid > "$RUNNER_TEMP/install-$attempt.log" 2>&1
             cat "$RUNNER_TEMP/install-$attempt.log"
             if grep -Fq 'config file template has changed' "$RUNNER_TEMP/install-$attempt.log"; then exit 1; fi
             export PATH="$HOME/.local/bin:$PATH"
@@ -66,6 +66,7 @@ jobs:
           for number, name in enumerate(['Software', 'Manager and content', 'Files', 'Profile changes', 'Locations', 'Next steps'], 1):
               assert f'{number} · {name}' in first and f'{number} · {name}' in second
           assert '4 installed.' in first
+          assert '7 · Enrollment' in first and 'check: ' in first
           assert 'Fleet TUI (Textual)' in first
           assert '~/.local/bin/chezmoi' in first
           assert '~/.local/bin/mise' in first
