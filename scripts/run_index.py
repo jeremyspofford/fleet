@@ -27,12 +27,27 @@ ACTIVE = None
 IDENTIFIER = re.compile(r"\d{8}-\d{6}-\d{6}-[a-f0-9]{12}")
 
 
-def machine_name():
-    """Return this machine's fleet name: its host name, unless FLEET_MACHINE_NAME names it.
+# The name chosen at enrollment. An enrollment from before names were chosen saves its hostname.
+NAME_FILE = ".fleet/machine-name"
+NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*")
 
-    The override lets two homes on one host act as two machines in tests and containers.
+
+def saved_name(home=None):
+    """Return the name saved in this machine's store, or an empty string."""
+    path = (Path.home() if home is None else home) / NAME_FILE
+    try:
+        name = path.read_text().strip() if path.is_file() and not path.is_symlink() else ""
+    except OSError:
+        return ""
+    return name if NAME.fullmatch(name) else ""
+
+
+def machine_name():
+    """Return this machine's fleet name: the saved name, else its host name.
+
+    FLEET_MACHINE_NAME overrides both. It lets two homes on one host act as two machines in tests.
     """
-    return os.environ.get("FLEET_MACHINE_NAME") or socket.gethostname()
+    return os.environ.get("FLEET_MACHINE_NAME") or saved_name() or socket.gethostname()
 
 
 def folder(home):

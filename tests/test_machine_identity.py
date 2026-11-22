@@ -72,7 +72,7 @@ class IdentityTests(unittest.TestCase):
         registry.merge(dell, digest, "DELL-XPS-8950", "b" * 32)
         received = dell["machines"][MAC]
         for field in registry.EXCHANGED:
-            self.assertEqual(received[field], own[field], field)
+            self.assertEqual(received.get(field), own.get(field), field)
         # The SSH target is each viewer's own fact. It never crosses an exchange.
         self.assertNotIn("ssh_target", digest["members"][0])
         self.assertEqual(received["ssh_target"], "")

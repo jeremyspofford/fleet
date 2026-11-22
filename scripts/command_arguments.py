@@ -204,7 +204,18 @@ def add_action_parameters(parser, name, action):
             import manager
 
             parser.add_argument(
-                "name", nargs="?", help="SSH config host to deploy to; its hostname names it"
+                "name",
+                nargs="?",
+                help="SSH config host or local WSL distro to deploy to; the machine names itself",
+            )
+            parser.add_argument(
+                "--machine-name",
+                help="the new machine's fleet name; required for a scripted WSL deploy",
+            )
+            parser.add_argument(
+                "--via",
+                choices=["wsl", "ssh"],
+                help="wsl: a distro on this host; ssh: an SSH host; needed when NAME matches both",
             )
             parser.add_argument("--domain", type=manager.domain_argument, help="scripted domain")
             parser.add_argument("--git-email", help="scripted Git author email")
@@ -214,7 +225,9 @@ def add_action_parameters(parser, name, action):
                 "--return-target", help="SSH target that reaches this machine from NAME"
             )
             parser.add_argument(
-                "--target", dest="ssh_target", help="user@host; default: NAME from SSH config"
+                "--target",
+                dest="ssh_target",
+                help="user@host; a distro as wsl:DISTRO or with --via wsl; default: NAME",
             )
             parser.add_argument(
                 "--tool",
@@ -327,6 +340,13 @@ def normalize(args, parser):
                 if getattr(args, name) is not None:
                     parser.error("Do not combine a flagged value with its old positional form.")
                 setattr(args, name, value)
+    if args.command == "tools" and args.action == "set":
+        import manager
+
+        if not args.tool or args.tool.startswith("-") or not manager.exact_version(args.version):
+            parser.error(
+                "tools set needs TOOL --version VERSION with an exact version, such as 24.14.1"
+            )
     if args.command == "tools" and args.action in ("set", "remove"):
         args.pin = args.tool + "@" + args.version if args.action == "set" else args.tool
     return args

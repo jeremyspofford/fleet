@@ -18,7 +18,12 @@ Review planned changes before interactive apply. Read decisions from the termina
 
 The registry is `~/.fleet/registry.toml`. A registry holds saved machine records; TOML is its structured file format.
 Schema 1 uses a `machines` table keyed by fleet name. The `hostname` field equals that key.
-A fleet name is the hostname the machine reports. When two machine IDs report one hostname, the second key is `HOSTNAME~ID`, with the first 8 ID digits.
+A fleet name is the name saved in the machine's `~/.fleet/machine-name` at enrollment. An older enrollment saves the hostname it reported.
+The `hostname` field holds that fleet name. The optional `system_hostname` and `distro` fields hold the OS hostname and the WSL distro as facts.
+Those two facts stay local: an exchange never carries them. A machine records them when it meets a sibling through `wsl.exe`.
+A member drops an unknown field from a received record instead of rejecting the record.
+When two machine IDs report one name, the second key is `NAME~ID`, with the first 8 ID digits.
+A sibling WSL distro's `ssh_target` is `wsl:DISTRO`. Fleet reaches it through `wsl.exe -d DISTRO`, never SSH.
 Each record stores hostname, operating system, domain, content repository and commit, manager version, last run, and last backup.
 A commit identifies a saved Git version. The registry retains full commit identifiers and absolute backup paths.
 The `schema_version` field is 1. Each machine table contains these fields:
