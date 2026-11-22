@@ -4,6 +4,7 @@ Usage: python3 -m unittest discover -s tests -v.
 Help: PYTHONPATH=scripts:tests python3 tests/test_diff.py --help.
 """
 
+import json
 import os
 from pathlib import Path
 import unittest
@@ -54,6 +55,44 @@ class DiffTests(unittest.TestCase):
         Path("/tmp/dotfleet-diff-changed.txt").write_text(changed)
         self.assertEqual(self.cli("diff", "--stat", expected=1), "~/.file\n")
         self.assertEqual(self.snapshot(), before)
+
+    def old_mise_layout(self):
+        """Make this machine look enrolled before PR #80: Fleet's pins in the global config.toml."""
+        import manager
+
+        fragment, user = ".config/mise/conf.d/fleet.toml", ".config/mise/config.toml"
+        source = self.home / ".fleet/chezmoi-source"
+        old = (self.home / fragment).read_text()
+        (source / "dot_config/mise/conf.d/fleet.toml").unlink()
+        (self.home / fragment).unlink()
+        state = ["chezmoi", "state", "delete", "--bucket=entryState"]
+        command(*state, "--key=" + str(self.home / fragment), env=self.env, cwd=self.home)
+        (source / "dot_config/mise/config.toml").write_text(old)
+        apply = ["chezmoi", "apply", "--force", str(self.home / user)]
+        command(*apply, env=self.env, cwd=self.home)
+        outputs = self.home / ".fleet/outputs.json"
+        recorded = json.loads(outputs.read_text())
+        recorded.pop(fragment)
+        recorded[user] = manager.fingerprint(self.home / user)
+        outputs.write_text(json.dumps(recorded))
+
+    def test_diff_and_doctor_work_before_the_first_mise_handover(self):
+        # Report F-033: diff stopped with "config.toml: not managed" on machines enrolled before #80.
+        self.enroll()
+        self.old_mise_layout()
+        (self.home / ".file").write_text("local change\n")
+        before = self.snapshot()
+        changed = self.cli("diff", expected=1)
+        self.assertNotIn("not managed", changed)
+        self.assertNotIn("Preview failed", changed)
+        self.assertIn("~/.file\n", changed)
+        self.assertIn("~/.config/mise/config.toml\n", changed)
+        self.assertIn("~/.config/mise/conf.d/fleet.toml\n", changed)
+        stat = self.cli("diff", "--stat", expected=1)
+        self.assertIn("~/.config/mise/config.toml\n", stat)
+        self.assertEqual(self.snapshot(), before)
+        doctor = self.cli("doctor", expected=1)
+        self.assertRegex(doctor, r"Drifted files +~/\.file\n")
 
     def test_update_preview_includes_removed_file_and_generated_identity(self):
         self.enroll()
