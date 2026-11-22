@@ -56,7 +56,8 @@ SECRET_LINE = re.compile(r"(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)")
 
 def strip_comment(text):
     """Drop a shell comment: an unquoted # at the start of a word. Keep # inside a word."""
-    quote, previous = None, " "
+    # The text follows NAME=, so a # that opens the value is part of it, as in bash.
+    quote, previous = None, "="
     for index, character in enumerate(text):
         if quote:
             if character == quote:
