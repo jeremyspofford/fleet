@@ -246,6 +246,57 @@ class PiRulesTests(Fixture):
         )
 
 
+class ReviewFollowUpTests(Fixture):
+    """Reviews F-022 and F-016: quotes in one-line strings, CRLF files, and held plugins."""
+
+    def config(self):
+        path = self.home / ".codex/config.toml"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def test_a_one_line_string_with_triple_quotes_never_stops_an_update(self):
+        config = self.config()
+        mine = 'note = \'use """ for docstrings\'\nother = "a \'\'\' b"\n\n[profiles.fast]\nmodel = "m"\n'
+        config.write_text(mine)
+        self.run_plan()
+        text = config.read_text()
+        parsed = tomllib.loads(text)
+        self.assertEqual(parsed["note"], 'use """ for docstrings')
+        self.assertEqual(parsed["profiles"], {"fast": {"model": "m"}})
+        self.assertIn("Use plain words.", parsed["developer_instructions"])
+        # The key sits before the first table, and every other line stays.
+        self.assertLess(text.index("developer_instructions"), text.index("[profiles.fast]"))
+
+    def test_a_crlf_codex_config_keeps_its_line_ends(self):
+        config = self.config()
+        config.write_bytes(b'model = "o4"\r\n\r\n[profiles.fast]\r\nmodel = "m"\r\n')
+        self.run_plan()
+        data = config.read_bytes()
+        self.assertNotIn(b"\n", data.replace(b"\r\n", b""))
+        self.assertTrue(data.startswith(b'model = "o4"\r\ndeveloper_instructions = '))
+        self.assertIn(b"[mcp_servers.fleet]\r\n", data)
+        # A second run finds nothing to change.
+        self.assertNotIn(".codex/config.toml", self.plan().files)
+
+
+class HeldPluginReleaseTests(PluginTests):
+    """Review F-022 defect 2: a held Claude plugin releases every one of its entries."""
+
+    def test_a_held_plugin_keeps_its_marketplace_after_the_declaration_goes(self):
+        self.deploy()
+        settings = self.home / ".claude/settings.json"
+        data = json.loads(settings.read_text())
+        self.assertIn("example", data["extraKnownMarketplaces"])
+        data["enabledPlugins"]["review-kit@example"] = False
+        settings.write_text(json.dumps(data))
+        self.deploy()
+        self.assertEqual(recorded(self.home, "claude", "plugins.review-kit"), [])
+        self.deploy("[agents]\nschema = 1\n")
+        after = json.loads(settings.read_text())
+        self.assertIn("example", after["extraKnownMarketplaces"])
+        self.assertEqual(after["enabledPlugins"], {"review-kit@example": False})
+
+
 class UserPluginTests(PluginTests):
     """Point 9: a plugin the user installed stays theirs. Fleet installs and records nothing."""
 
@@ -297,6 +348,7 @@ class UserPluginTests(PluginTests):
 # The imported plugin tests run in their own module only.
 for name in [name for name in dir(PluginTests) if name.startswith("test_")]:
     setattr(UserPluginTests, name, None)
+    setattr(HeldPluginReleaseTests, name, None)
 del PluginTests
 
 if __name__ == "__main__":

@@ -889,16 +889,48 @@ TOP_KEY = re.compile(r"^\s*([A-Za-z0-9_-]+)\s*=")
 
 
 def in_strings(lines):
-    """Return the indexes of lines inside a multi-line string, after its opening line."""
-    inside, quote = set(), None
+    """Return the indexes of lines inside a multi-line string, after its opening line.
+
+    Scan TOML strings in order, so quotes inside a one-line string or a comment never count.
+    """
+    inside, open_quote = set(), None
     for index, line in enumerate(lines):
-        if quote:
+        if open_quote:
             inside.add(index)
-            if quote in line:
-                quote = None
-            continue
-        quote = next((mark for mark in ('"""', "'''") if line.count(mark) % 2), None)
+        position = 0
+        while position < len(line):
+            if open_quote:
+                end = line.find(open_quote, position)
+                while open_quote == '"""' and end > 0 and escaped(line, end):
+                    end = line.find(open_quote, end + 1)
+                if end < 0:
+                    break
+                open_quote, position = None, end + 3
+                continue
+            character = line[position]
+            if character == "#":
+                break
+            if line.startswith(('"""', "'''"), position):
+                open_quote, position = line[position : position + 3], position + 3
+                continue
+            if character in "\"'":
+                end = position + 1
+                while end < len(line) and not (
+                    line[end] == character and not (character == '"' and escaped(line, end))
+                ):
+                    end += 1
+                position = end + 1
+                continue
+            position += 1
     return inside
+
+
+def escaped(line, index):
+    """Return True when an odd number of backslashes precede the character at index."""
+    count = 0
+    while index - count - 1 >= 0 and line[index - count - 1] == "\\":
+        count += 1
+    return count % 2 == 1
 
 
 def toml_top_key(text, entry, element):
@@ -1014,6 +1046,9 @@ def edited_text(home, relative, fmt, edits):
     if reparsed != expected:
         raise ValueError(f"Editing ~/{relative} would change other values; nothing was written.")
     path = home / relative
+    if path.is_file() and b"\r\n" in path.read_bytes():
+        # A file with CRLF line ends keeps them; Python reads it with plain newlines.
+        result = result.replace("\r\n", "\n").replace("\n", "\r\n")
     mode = path.stat().st_mode & 0o777 if path.exists() else 0o600
     return result, mode
 
@@ -1124,6 +1159,11 @@ def plan(home, checkout, profile, table, catalog, managed=frozenset()):
     plugins = {(e.agent, e.item) for e in user_held if e.item.startswith("plugins.")}
     held = {entry.key() for entry in user_held}
     held |= {entry.key() for entry in result.entries if (entry.agent, entry.item) in plugins}
+    # Release every recorded entry of a held plugin, so no later removal deletes the user's.
+    released = {entry.key() for entry in result.released_entries}
+    for old in previous.values():
+        if (old.agent, old.item) in plugins and old.key() not in released:
+            result.released_entries.append(old)
     result.entries = [entry for entry in result.entries if entry.key() not in held]
     for relative in list(files):
         files[relative] = [edit for edit in files[relative] if edit[0].key() not in held]
