@@ -169,6 +169,9 @@ Use `fleet tools set TOOL --version VERSION` to select and install a version. Mi
 Use `fleet tools update TOOL` to select and install the newest version that Mise finds. The profile still records that exact version.
 Use `fleet tools adopt` to record the installed version of each tool without a recorded version. Adopt installs nothing.
 A saved tool choice selects a version. It does not mean that version is installed.
+Fleet writes the recorded versions to `~/.config/mise/conf.d/fleet.toml`. `~/.config/mise/config.toml` is yours, and `mise use -g` writes there.
+Mise reads `config.toml` after `conf.d`, so your own entry for a tool overrides Fleet's.
+An update from an older Fleet moves Fleet's pins out of `config.toml`. Your own entries stay, and the run prints one line.
 Setup asks when identity is incomplete, the domain choice is unconfirmed, or a tool version floats, such as `latest`.
 Prompts show recorded values. Press Enter to use the stated action, or type `skip` to leave a choice incomplete.
 For identity, Enter keeps a nonempty displayed value. Type `skip` explicitly to leave identity empty.

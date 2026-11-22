@@ -381,7 +381,8 @@ else: sys.exit(1)
         self.assertNotIn("node", p["pins"])
         self.assertIn("node", p["unpinned_tools"])
         self.assertNotIn(
-            "node", tomllib.loads((self.home / ".config/mise/config.toml").read_text())["tools"]
+            "node",
+            tomllib.loads((self.home / ".config/mise/conf.d/fleet.toml").read_text())["tools"],
         )
         self.assertTrue((self.home / ".local/share/mise/installs/node/24.14.1").exists())
         self.cli("tools", "set", "node", "--version", "latest", expected=2)
