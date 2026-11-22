@@ -1715,8 +1715,8 @@ def remove_fleet(home, selected=None, restored=(), require_word="uninstall"):
             home / ".fleet/tui",
             home / ".fleet/agents",
         ],
-        rows,
-        lambda account: agent_deploy.uninstall_plugins(
+        software=rows,
+        before_files=lambda account: agent_deploy.uninstall_plugins(
             plugins, enrollment.agent_manifest(), account
         ),
     )

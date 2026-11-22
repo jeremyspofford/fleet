@@ -188,10 +188,10 @@ class UninstallPluginTests(PluginTests):
         self.calls()
         captured = {}
 
-        def transaction(home, operations, label, *arguments):
-            captured["rows"] = arguments[3]
+        def transaction(home, operations, label, *arguments, software=(), before_files=None):
+            captured["rows"] = software
             account = type("Account", (), {"applied_software": set()})()
-            arguments[4](account)
+            before_files(account)
             captured["applied"] = account.applied_software
             return 0
 

@@ -716,6 +716,9 @@ class Planner:
                 continue
             if not agent_table.applies(item, self.profile):
                 continue
+            if item.name == "fleet":
+                # Fleet's own Claude Code plugin link uses this name.
+                raise ValueError(f"Marketplace skill {item.name} uses a name reserved for Fleet.")
             folder = item.spec["path"].rstrip("/")
             for name, mode in sorted(agent_table.tracked(item.root).items()):
                 if name.startswith(folder + "/"):

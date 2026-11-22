@@ -54,6 +54,21 @@ def expand(text, environment):
 SECRET_LINE = re.compile(r"(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)")
 
 
+def strip_comment(text):
+    """Drop a shell comment: an unquoted # at the start of a word. Keep # inside a word."""
+    quote, previous = None, " "
+    for index, character in enumerate(text):
+        if quote:
+            if character == quote:
+                quote = None
+        elif character in "'\"":
+            quote = character
+        elif character == "#" and previous.isspace():
+            return text[:index]
+        previous = character
+    return text
+
+
 def read_secrets():
     """Read NAME=VALUE lines from ~/.secrets. Refuse the file when others can read or own it."""
     path = Path.home() / ".secrets"
@@ -79,7 +94,8 @@ def read_secrets():
         if not found:
             continue
         try:
-            words = shlex.split(found.group(2), comments=True)  # Quoting only; no shell runs.
+            # Quoting only; no shell runs. As in a shell, # starts a comment only at a word start.
+            words = shlex.split(strip_comment(found.group(2)))
         except ValueError:
             continue
         if len(words) <= 1:

@@ -55,6 +55,11 @@ class ParsingTest(Home):
         self.assertEqual(result, {"A": "one", "B": "two", "C": "a b", "D": "c d", "E": "$(cmd)"})
         self.assertEqual(lines, [])
 
+    def test_a_hash_inside_a_value_stays_and_a_trailing_comment_goes(self):
+        self.write("A=foo#bar\nB='x # y'\nC=token # note\nD=\"p#q\" #c\n")
+        result, _ = self.read()
+        self.assertEqual(result, {"A": "foo#bar", "B": "x # y", "C": "token", "D": "p#q"})
+
 
 class StdioTest(Home):
     def run_child(self, spec):
