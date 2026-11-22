@@ -551,20 +551,37 @@ class Planner:
             self.add(".claude/rules/fleet.md", "claude", "rules", link=str(self.home / rules))
 
     def skill_names(self):
-        """Name each skill that reaches this machine: content folders and pulled-in skills."""
+        """Name each skill that reaches this machine: content, pulled-in, and the user's own.
+
+        Content skills pass the domain and exception filter. A folder that the user placed in
+        ~/.agents/skills, outside content, is linked as it is.
+        """
         declared = {
             item.name: item
             for item in self.table.items
             if item.kind == "skills" and item.origin == "content"
         }
+        content = agent_table.skills(self.checkout)
         names = [
             name
-            for name in agent_table.skills(self.checkout)
+            for name in content
             if agent_table.applies(
                 declared.get(name, agent_table.Item("skills", name, {})), self.profile
             )
         ]
-        return sorted(set(names) | set(self.pulled_names))
+        folder = self.home / SKILLS
+        own = (
+            {
+                path.name
+                for path in folder.iterdir()
+                if path.is_dir() and (path / "SKILL.md").is_file()
+            }
+            if folder.is_dir()
+            else set()
+        )
+        # Fleet's plugin link uses the name fleet, so a folder by that name gets no link.
+        own -= set(content) | set(self.pulled_names) | {"fleet"}
+        return sorted(set(names) | set(self.pulled_names) | own)
 
     def gemini(self):
         base = f"{TREE}/gemini"

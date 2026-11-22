@@ -60,6 +60,12 @@ class ParsingTest(Home):
         result, _ = self.read()
         self.assertEqual(result, {"A": "foo#bar", "B": "x # y", "C": "token", "D": "p#q"})
 
+    def test_a_value_that_starts_with_a_hash_is_kept_as_bash_does(self):
+        # Review F-025, defect 2: bash reads export B=#bare as B=#bare.
+        self.write("export B=#bare\nE= #only-a-comment\n")
+        result, _ = self.read()
+        self.assertEqual(result, {"B": "#bare", "E": ""})
+
 
 class StdioTest(Home):
     def run_child(self, spec):

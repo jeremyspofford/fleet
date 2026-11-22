@@ -95,6 +95,21 @@ class SkillLinkTests(Fixture):
         )
         self.assertNotIn(".claude/skills/notes", inventory(self.home)["paths"])
 
+    def test_a_users_own_skill_folder_gets_a_link_too(self):
+        # Review F-025, defect 1: a skill the user placed in ~/.agents/skills, outside content.
+        mine = self.home / agent_deploy.SKILLS / "my-own"
+        mine.mkdir(parents=True)
+        (mine / "SKILL.md").write_text("---\nname: my-own\ndescription: Mine.\n---\n")
+        self.run_plan()
+        self.assertEqual(os.readlink(self.link("my-own")), str(mine))
+        self.assertIn(".claude/skills/my-own", inventory(self.home)["paths"])
+        # A content skill turned off stays off, even while its folder still exists.
+        (self.home / agent_deploy.SKILLS / "notes").mkdir(parents=True, exist_ok=True)
+        self.profile["agent_items"] = {"skills.notes": "off"}
+        self.run_plan()
+        self.assertFalse(self.link("notes").is_symlink())
+        self.assertTrue(self.link("my-own").is_symlink())
+
     def test_an_excluded_or_removed_skill_has_no_link(self):
         self.run_plan()
         self.profile["agent_items"] = {"skills.notes": "off"}
