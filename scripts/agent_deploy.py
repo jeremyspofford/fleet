@@ -74,6 +74,7 @@ SIGN_IN = {
     "pi": "run pi mcp login {name}",
 }
 OPENCODE_SCHEMA = "https://opencode.ai/config.json"
+PI_RULES = ".pi/agent/APPEND_SYSTEM.md"
 GATEWAY = "fleet"  # The one server entry that each agent receives for every declared MCP server.
 MANAGER = ".fleet/manager"
 
@@ -224,6 +225,7 @@ class Plan:
     plugin_removals: list = field(default_factory=list)
     released_plugins: list = field(default_factory=list)
     reported: list = field(default_factory=list)
+    plugin_steps: dict = field(default_factory=dict)
 
     def changed_paths(self, home):
         """Home-relative paths that apply would create, replace, or remove."""
@@ -453,7 +455,8 @@ class Planner:
             )
         return result
 
-    def rules(self, agent):
+    def rule_text(self, agent):
+        """Return the agent's declared rule sets as one text, or None when it has none."""
         chosen = self.items(agent, "rules")
         if not chosen:
             return None
@@ -461,8 +464,14 @@ class Planner:
         for item in chosen:
             text = blob(item.root or self.checkout, item.spec["file"]).decode()
             parts.append(f"<!-- Fleet rule set: {item.name} -->\n" + text.rstrip("\n") + "\n")
+        return "\n".join(parts)
+
+    def rules(self, agent):
+        text = self.rule_text(agent)
+        if text is None:
+            return None
         relative = f"{TREE}/rules/{agent}.md"
-        self.add(relative, agent, "rules", "\n".join(parts).encode())
+        self.add(relative, agent, "rules", text.encode())
         return relative
 
     def hooks(self, agent):
@@ -579,8 +588,12 @@ class Planner:
                 )
         if events:
             self.plan.steps.append("codex: trust new or changed Fleet hooks in /hooks.")
-        if self.items("codex", "rules"):
-            self.plan.notes.append("codex: rule sets are unsupported; Codex reads no include file.")
+        rules = self.rule_text("codex")
+        if rules is not None:
+            # Codex reads no include file. Its one instructions setting carries the rule text.
+            self.entry(
+                "codex", spec["mcp_file"], "toml", (), "developer_instructions", rules, "rules"
+            )
 
     def opencode(self):
         spec = self.catalog["opencode"]
@@ -608,8 +621,10 @@ class Planner:
             self.entry("pi", spec["mcp_file"], "json", ("mcpServers",), name, rendered, item.key)
         for item in self.items("pi", "hooks"):
             self.plan.notes.append(f"pi: hook {item.name} is unsupported for this agent.")
-        if self.items("pi", "rules"):
-            self.plan.notes.append("pi: rule sets are unsupported; Pi reads no include file.")
+        rules = self.rules("pi")
+        if rules:
+            # Pi 1.3.0 reads a linked APPEND_SYSTEM.md into its system prompt (tested 2026-11-20).
+            self.add(PI_RULES, "pi", "rules", link=str(self.home / rules))
 
     def antigravity(self):
         """Write the one tested surface: the gateway entry. Report every untested item."""
@@ -665,7 +680,7 @@ class Planner:
                 self.entry(
                     agent, relative, "json", ("extraKnownMarketplaces",), name, listing, item.key
                 )
-            self.plan.steps.append(
+            self.plan.plugin_steps[(agent, item.key)] = (
                 f"claude: start Claude Code once in a terminal; it installs {identifier}"
                 " in the background and loads it from the next session."
             )
@@ -673,7 +688,9 @@ class Planner:
         container = ("plugin",) if agent == "opencode" else ("packages",)
         self.entry(agent, relative, "json", container, identifier, identifier, item.key, "self")
         label = "OpenCode" if agent == "opencode" else "Pi"
-        self.plan.steps.append(f"{agent}: the next {label} start installs {identifier}.")
+        self.plan.plugin_steps[(agent, item.key)] = (
+            f"{agent}: the next {label} start installs {identifier}."
+        )
 
     def marketplace_skills(self):
         """Copy pulled-in skills into the tree and link each one into ~/.agents/skills."""
@@ -846,8 +863,72 @@ def toml_block(text, container, name):
     return lines, owned_lines
 
 
+TOP_KEY = re.compile(r"^\s*([A-Za-z0-9_-]+)\s*=")
+
+
+def in_strings(lines):
+    """Return the indexes of lines inside a multi-line string, after its opening line."""
+    inside, quote = set(), None
+    for index, line in enumerate(lines):
+        if quote:
+            inside.add(index)
+            if quote in line:
+                quote = None
+            continue
+        quote = next((mark for mark in ('"""', "'''") if line.count(mark) % 2), None)
+    return inside
+
+
+def toml_top_key(text, entry, element):
+    """Rewrite one top-level TOML key. It sits before the first table. Keep every other byte."""
+    lines = text.splitlines(keepends=True)
+    inside = in_strings(lines)
+    first = next(
+        (
+            index
+            for index, line in enumerate(lines)
+            if index not in inside and TABLE_HEADER.match(line)
+        ),
+        len(lines),
+    )
+    start = next(
+        (
+            index
+            for index in range(first)
+            if index not in inside
+            and (match := TOP_KEY.match(lines[index]))
+            and match.group(1) == entry.name
+        ),
+        None,
+    )
+    if start is not None:
+        end = start + 1
+        opener = lines[start].split("=", 1)[1].lstrip()
+        for quote in ('"""', "'''"):
+            if opener.startswith(quote) and opener.count(quote) == 1:
+                # A multi-line string runs to its closing quotes.
+                while end < len(lines) and quote not in lines[end]:
+                    end += 1
+                end += 1
+        del lines[start:end]
+        first -= end - start
+    if element is not None:
+        position = start
+        if position is None:
+            # Add the key after the last top-level line, before any blank lines and tables.
+            position = first
+            while position > 0 and not lines[position - 1].strip():
+                position -= 1
+            if position and not lines[position - 1].endswith("\n"):
+                lines[position - 1] += "\n"
+        lines.insert(position, f"{entry.name} = {value(element)}\n")
+    return "".join(lines)
+
+
 def toml_edit(text, entry, element):
     """Rewrite one named TOML table at the end of the file. Keep every other byte."""
+    if not entry.container and not isinstance(element, dict):
+        return toml_top_key(text, entry, element)
     lines, owned_lines = toml_block(text, entry.container, entry.name)
     removed = "".join(lines[index] for index in owned_lines)
     quoted = re.sub(r'"(?:\\.|[^"\\])*"|\'[^\']*\'', '""', removed)
@@ -925,8 +1006,9 @@ def plan(home, checkout, profile, table, catalog, managed=frozenset()):
     off_agents = {name for name, enabled in profile.get("agents", {}).items() if not enabled} | {
         name for name, spec in catalog.items() if not spec.get("render", False)
     }
+    held_paths = set()
 
-    for relative, output in result.outputs.items():
+    for relative, output in list(result.outputs.items()):
         if relative in managed:
             raise ValueError(f"Content also manages ~/{relative}; two sources cannot own it.")
         path = home / relative
@@ -939,15 +1021,19 @@ def plan(home, checkout, profile, table, catalog, managed=frozenset()):
             continue
         if current is None or current == output.fingerprint():
             continue
-        if path.is_dir() and not path.is_symlink():
-            result.conflicts.append(f"~/{relative} is a folder; move it aside, then update.")
-        elif saved is None:
-            result.conflicts.append(f"~/{relative} exists and Fleet did not write it.")
-        elif not matches(path, saved):
-            result.conflicts.append(f"~/{relative} changed since Fleet wrote it.")
+        if saved is None or not matches(path, saved) or path.is_dir() and not path.is_symlink():
+            # The user's own file wins. Fleet stops managing this path and writes nothing.
+            del result.outputs[relative]
+            held_paths.add(relative)
+            if saved is not None:
+                result.released.append(relative)
+            agent = output.agent or "agents"
+            result.steps.append(
+                f"{agent}: ~/{relative} holds your own file; Fleet leaves it and stopped managing it."
+            )
 
     for relative, record in recorded_paths.items():
-        if relative in result.outputs:
+        if relative in result.outputs or relative in held_paths:
             continue
         if record.get("agent") in off_agents and record.get("item") != "legacy":
             continue  # Turning an agent off keeps its outputs.
@@ -968,6 +1054,7 @@ def plan(home, checkout, profile, table, catalog, managed=frozenset()):
     planned = {entry.key(): entry for entry in result.entries}
     previous = {entry_from(item).key(): entry_from(item) for item in inventory.get("entries", [])}
     files = {}
+    user_held = []
     for entry in result.entries:
         if entry.file in managed:
             raise ValueError(f"Content also manages ~/{entry.file}; two sources cannot own it.")
@@ -976,16 +1063,15 @@ def plan(home, checkout, profile, table, catalog, managed=frozenset()):
         old = previous.get(entry.key())
         if not found:
             files.setdefault(entry.file, []).append((entry, copy.deepcopy(entry.value)))
-        elif old is None:
-            if same(current, entry.value):
-                result.adopted.append(entry)
-            else:
-                result.conflicts.append(
-                    f"{entry.agent}: {entry.item} in ~/{entry.file} differs from the rendered value."
-                )
-        elif not same(current, old.value):
-            result.conflicts.append(
-                f"{entry.agent}: {entry.item} in ~/{entry.file} changed since Fleet wrote it."
+        elif old is None or not same(current, old.value):
+            # A value Fleet did not write, or one the user changed, stays the user's.
+            # Fleet never takes over an equal value either, so it records nothing for it.
+            user_held.append(entry)
+            if old is not None:
+                result.released_entries.append(old)
+            result.steps.append(
+                f"{entry.agent}: {entry.item} in ~/{entry.file} holds your own value;"
+                " Fleet leaves it and stopped managing it."
             )
         else:
             merged = merge(current, entry.value, old.value)
@@ -1011,7 +1097,18 @@ def plan(home, checkout, profile, table, catalog, managed=frozenset()):
             result.kept.append(
                 f"{old.agent}: {old.item} in ~/{old.file} changed after Fleet wrote it; kept."
             )
-    plan_plugins(result, inventory, profile, off_agents)
+    # A plugin the user already lists is the user's whole: Fleet writes none of its entries.
+    plugins = {(e.agent, e.item) for e in user_held if e.item.startswith("plugins.")}
+    held = {entry.key() for entry in user_held}
+    held |= {entry.key() for entry in result.entries if (entry.agent, entry.item) in plugins}
+    result.entries = [entry for entry in result.entries if entry.key() not in held]
+    for relative in list(files):
+        files[relative] = [edit for edit in files[relative] if edit[0].key() not in held]
+        if not files[relative]:
+            del files[relative]
+    # A held plugin installs nothing, so its install step is not printed.
+    result.steps += [step for key, step in result.plugin_steps.items() if key not in plugins]
+    plan_plugins(result, inventory, profile, off_agents, home, catalog)
     for relative, edits in files.items():
         outcome = edited_text(home, relative, edits[0][0].format, edits)
         if outcome is not None:
@@ -1034,14 +1131,42 @@ def plugin_key(record):
     return (record["agent"], record["item"])
 
 
-def plan_plugins(result, inventory, profile, off_agents):
-    """Compare desired plugins with recorded installs. Install, replace, or remove."""
+def installed_by_user(home, catalog, record):
+    """Read the agent's own plugin records on disk. Run no agent command.
+
+    Codex lists an installed plugin as a [plugins."ID"] table in its config.
+    Gemini CLI keeps each installed extension in a folder named for it.
+    """
+    if record["agent"] == "codex":
+        relative = (catalog or {}).get("codex", {}).get("mcp_file", ".codex/config.toml")
+        try:
+            _, data = read_shared(home, relative, "toml")
+        except ValueError:
+            return False
+        plugins = data.get("plugins")
+        return isinstance(plugins, dict) and record["id"] in plugins
+    if record["agent"] == "gemini":
+        return (home / ".gemini/extensions" / extension_name(record["id"])).is_dir()
+    return False
+
+
+def plan_plugins(result, inventory, profile, off_agents, home=None, catalog=None):
+    """Compare desired plugins with recorded installs. Install, replace, or remove.
+
+    A plugin the user installed before Fleet declared it stays the user's: no install, no record.
+    """
     recorded = {plugin_key(record): record for record in inventory.get("plugins", [])}
     desired = {plugin_key(record): record for record in result.plugins}
     exceptions = agent_table.exceptions(profile)
     for key, record in desired.items():
         old = recorded.get(key)
         if old and (old["id"], old["marketplace"]) == (record["id"], record["marketplace"]):
+            continue
+        if old is None and home is not None and installed_by_user(home, catalog, record):
+            result.steps.append(
+                f"{record['agent']}: plugin {record['id']} is already installed; it stays yours,"
+                " and Fleet records nothing."
+            )
             continue
         if old:
             result.plugin_removals.append(old)

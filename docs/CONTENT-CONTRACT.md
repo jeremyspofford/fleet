@@ -102,6 +102,7 @@ They accept `agents`, a list of agent names, and `domains`, a list of declared d
 Without `agents`, every selected agent that supports the item receives it. Without `domains`, every machine receives it.
 An unknown agent name prints a warning and is skipped. Content can name an agent that an older manager lacks.
 A domain must be one that the content declares.
+Fleet rejects `core` in `domains`, because core always applies. Omit `domains` to reach every machine.
 
 Skills are ordinary content. Each folder under `.agents/skills/` that holds `SKILL.md` is one skill.
 chezmoi installs skills at `~/.agents/skills`, as it installs other content.
@@ -137,8 +138,9 @@ Hooks and stdio servers run commands from content. Use only trusted repositories
 
 ## Manager-owned outputs
 
-Fleet reserves `~/.config/git/local.gitconfig`, `~/.config/dotfiles/domain`, `~/.config/mise/config.toml`, and `~/.secrets`.
-Plain content can provide Mise defaults. The manager replaces that output with defaults merged under profile tool versions.
+Fleet reserves `~/.config/git/local.gitconfig`, `~/.config/dotfiles/domain`, `~/.config/mise/conf.d/fleet.toml`, and `~/.secrets`.
+Plain content can provide Mise defaults in `.config/mise/config.toml`. Fleet merges them under profile tool versions into its fragment.
+Content never manages `~/.config/mise/config.toml`. That file belongs to the user, and `mise use -g` writes there.
 Native chezmoi content must leave reserved paths unmanaged. Other native outputs still use the original checkout.
 Fleet also owns `~/.config/chezmoi/chezmoi.toml`. Content config templates never write that file.
 After writing it, Fleet updates chezmoi's saved template checksum, an identifier for template contents.

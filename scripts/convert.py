@@ -43,12 +43,18 @@ RESERVED = {
     "CHANGELOG.md",
     "package.json",
 }
+# Fleet's tool pins live in a Mise fragment. The global config.toml stays the user's, and
+# mise use -g writes there. Mise loads conf.d before config.toml, so the user's entries win.
+MISE = ".config/mise/conf.d/fleet.toml"
+USER_MISE = ".config/mise/config.toml"
 GENERATED = {
     ".secrets",
     ".config/git/local.gitconfig",
     ".config/dotfiles/domain",
-    ".config/mise/config.toml",
+    MISE,
 }
+# Content may not manage these. Plain content's Mise config supplies defaults only.
+RESERVED = GENERATED | {USER_MISE}
 
 
 def tracked(checkout):

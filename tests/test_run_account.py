@@ -267,7 +267,7 @@ class RunAccountTests(unittest.TestCase):
         text = summary(output)
         self.assertIn("Tool node  24.14.1 → not set", text)
         for name in [
-            ".config/mise/config.toml",
+            ".config/mise/conf.d/fleet.toml",
             ".config/chezmoi/chezmoi.toml",
             ".fleet/profile.toml",
         ]:

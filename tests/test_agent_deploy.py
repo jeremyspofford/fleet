@@ -178,7 +178,11 @@ class DeployTests(Fixture):
         config.write_text(original)
         self.run_plan()
         text = config.read_text()
-        self.assertTrue(text.startswith(original))
+        # The rules key joins the top-level keys, before the first table. Every other byte stays.
+        mine = "".join(
+            line for line in text.splitlines(True) if not line.startswith("developer_instructions")
+        )
+        self.assertTrue(mine.startswith(original))
         # The agent adds a key inside Fleet's entry; that key never counts as drift.
         config.write_text(
             text.replace("[mcp_servers.fleet]\n", "[mcp_servers.fleet]\nenabled = false\n")
@@ -194,34 +198,36 @@ class DeployTests(Fixture):
         self.assertEqual(entry["env_vars"], ["DOCS_API_KEY", "DOCS_REGION", "ISSUES_TOKEN"])
         self.assertFalse(entry["enabled"])
 
-    def test_unrecorded_values_conflict_or_are_adopted(self):
+    def test_unrecorded_values_stay_the_users_and_are_never_adopted(self):
+        # Owner ruling 2026-11-20, point 1: the user's value wins; Fleet never takes one over.
         settings = self.home / ".pi/agent/mcp.json"
         settings.parent.mkdir(parents=True)
+        rendered = next(entry.value for entry in self.plan().entries if entry.agent == "pi")
         settings.write_text(json.dumps({"mcpServers": {"fleet": {"command": "other"}}}))
         result = self.plan()
+        self.assertEqual(result.conflicts, [])
         self.assertIn(
-            "pi: gateway.fleet in ~/.pi/agent/mcp.json differs from the rendered value.",
-            result.conflicts,
+            "pi: gateway.fleet in ~/.pi/agent/mcp.json holds your own value;"
+            " Fleet leaves it and stopped managing it.",
+            result.steps,
         )
-        with self.assertRaises(ValueError) as caught:
-            agent_deploy.require_no_conflicts(result)
-        self.assertIn("agents set --name ITEM --state local", str(caught.exception))
-        rendered = next(entry.value for entry in result.entries if entry.agent == "pi")
         settings.write_text(json.dumps({"mcpServers": {"fleet": dict(rendered, disabled=True)}}))
         result = self.plan()
         self.assertEqual(result.conflicts, [])
-        self.assertIn("gateway.fleet", [entry.item for entry in result.adopted])
+        self.assertEqual(result.adopted, [])
+        self.assertNotIn(
+            "gateway.fleet", [entry.item for entry in result.entries if entry.agent == "pi"]
+        )
 
-    def test_changed_recorded_entries_stop_and_missing_ones_return(self):
+    def test_changed_recorded_entries_are_released_and_missing_ones_return(self):
         self.run_plan()
         settings = self.home / ".pi/agent/mcp.json"
         data = json.loads(settings.read_text())
         data["mcpServers"]["fleet"]["command"] = "edited"
         settings.write_text(json.dumps(data))
-        self.assertIn(
-            "pi: gateway.fleet in ~/.pi/agent/mcp.json changed since Fleet wrote it.",
-            self.plan().conflicts,
-        )
+        result = self.plan()
+        self.assertEqual(result.conflicts, [])
+        self.assertIn("gateway.fleet", [entry.item for entry in result.released_entries])
         del data["mcpServers"]["fleet"]
         settings.write_text(json.dumps(data))
         self.run_plan()
