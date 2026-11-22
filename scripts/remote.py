@@ -129,8 +129,9 @@ def validate_member(fact):
     fields = {**registry.FIELDS, **registry.OPTIONAL_FIELDS}
     if not isinstance(fact, dict) or not {"hostname", "enrolled", "recorded_at"} <= set(fact):
         raise ValueError("Invalid member in the registry digest.")
-    if set(fact) - set(fields):
-        raise ValueError("Invalid member in the registry digest.")
+    # A newer member may send a field this version does not know. Drop it; store nothing unknown.
+    for unknown in set(fact) - set(fields):
+        del fact[unknown]
     for field, value in fact.items():
         if type(value) is not fields[field]:
             raise ValueError("Invalid member in the registry digest.")

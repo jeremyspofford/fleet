@@ -1783,26 +1783,36 @@ def wsl_install(home, args):
     """
     import siblings
 
-    name = args.name or args.ssh_target or ""
+    name = args.name or ""
     wanted = args.ssh_target or ""
+    via = getattr(args, "via", None)
+    explicit = connections.is_sibling(wanted)
+    if via == "ssh" or wanted and not explicit and via != "wsl":
+        # A bare --target keeps its SSH meaning. It names a distro only as wsl:DISTRO or with --via wsl.
+        return False
     data = registry.load(home)
     member = registry.resolve(data, name) if name else None
     recorded = data["machines"].get(member, {}) if member else {}
     saved = recorded.get("ssh_target", "")
     available = siblings.distros() if siblings.interop() else []
-    if connections.is_sibling(wanted):
+    if explicit:
         distro = wanted[len(connections.WSL) :]
     elif connections.is_sibling(saved):
         distro = saved[len(connections.WSL) :]
     else:
         distro = siblings.match(wanted or name, available)
-    via = getattr(args, "via", None)
-    if via == "ssh" or not (distro or via == "wsl"):
+    if not (distro or via == "wsl"):
         return False
-    if distro and via is None and name in connections.hosts(home):
-        raise ValueError(
-            f"{name} names a WSL distro and an SSH config host. Add --via wsl or --via ssh."
-        )
+    if distro and via is None and not explicit and name:
+        # NAME may also reach an SSH host: through the SSH config, or through a saved SSH target.
+        if name in connections.hosts(home):
+            raise ValueError(
+                f"{name} names a WSL distro and an SSH config host. Add --via wsl or --via ssh."
+            )
+        if saved and not connections.is_sibling(saved):
+            raise ValueError(
+                f"{name} names a WSL distro and a saved SSH target. Add --via wsl or --via ssh."
+            )
     if not siblings.interop():
         raise ValueError(
             "wsl.exe is unavailable, so Fleet cannot reach a sibling. Next: "
@@ -1816,8 +1826,8 @@ def wsl_install(home, args):
         )
     if distro == siblings.own_distro():
         raise ValueError("This distro is this machine. Choose another distro.")
-    # NAME is the new machine's name when a different distro is its target.
-    if not args.machine_name and name.lower() != distro.lower():
+    # An explicit NAME that differs from the distro is the new machine's name.
+    if not args.machine_name and name and name.lower() != distro.lower():
         args.machine_name = name
     if not args.machine_name and not manager.has_terminal():
         raise ValueError(

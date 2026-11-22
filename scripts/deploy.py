@@ -452,6 +452,10 @@ def register_caller(home, target, name, options, terminal, announce=True):
                 "enrollment failed", [f"{name}: it reported this machine's own name and no ID."]
             )
         data["machines"][key].update(ssh_target=target, recorded_at=fact["recorded_at"])
+        # This machine met the target itself, so it records the target's local facts too.
+        data["machines"][key].update(
+            {name: facts[name] for name in registry.LOCAL_FACTS if facts.get(name)}
+        )
 
     result = command.change_registry(home, add)
     if not result and announce and facts["hostname"] != name:

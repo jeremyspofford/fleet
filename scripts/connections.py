@@ -179,20 +179,32 @@ def argv(target, command, terminal=False):
     return arguments + ["--", target, command]
 
 
-def environment():
-    # WSL_UTF8 makes wsl.exe print UTF-8; SSH ignores it.
-    return dict(os.environ, SSH_ASKPASS_REQUIRE="never", LC_ALL="C", WSL_UTF8="1")
+def environment(sibling=False):
+    """Return the environment for SSH or wsl.exe. wsl.exe sees WSL_UTF8 only through WSLENV."""
+    result = dict(os.environ, SSH_ASKPASS_REQUIRE="never", LC_ALL="C", WSL_UTF8="1")
+    if sibling:
+        shared = [name for name in os.environ.get("WSLENV", "").split(":") if name]
+        result["WSLENV"] = ":".join([*shared, "WSL_UTF8"] if "WSL_UTF8" not in shared else shared)
+    return result
+
+
+def decoded(data):
+    """Decode command output. wsl.exe errors may be UTF-16-LE; a bad byte never raises."""
+    if not data:
+        return ""
+    return data.decode("utf-16-le" if b"\0" in data else "utf-8", errors="replace")
 
 
 def invoke(target, command, payload=None, *, probe=False):
-    return subprocess.run(
+    result = subprocess.run(
         argv(target, command),
-        input=payload if payload is not None else "",
-        text=True,
+        input=(payload if payload is not None else "").encode(),
         capture_output=True,
-        env=environment(),
+        env=environment(is_sibling(target)),
         timeout=TIMEOUT if probe else None,
     )
+    result.stdout, result.stderr = decoded(result.stdout), decoded(result.stderr)
+    return result
 
 
 def one_line(text):

@@ -184,6 +184,24 @@ class WizardTests(unittest.TestCase):
         machines = registry.get("machines", registry)
         self.assertEqual(machines["dell-wsl-alertventure"]["distro"], "AlertVenture")
 
+    def test_the_name_prompt_rejects_another_machines_name(self):
+        import registry
+        from common import atomic
+
+        self.defaults_origin()
+        self.env["WSL_DISTRO_NAME"] = "AlertVenture"
+        self.env.pop("FLEET_MACHINE_NAME", None)
+        other = registry.blank("other-box") | {"enrolled": True, "machine_id": "d" * 32}
+        data = {"schema_version": 1, "machines": {"other-box": other}, "removed": {}}
+        atomic(self.home / registry.REGISTRY, registry.serialize(data))
+        answers = [
+            (b"Machine name [", b"other-box\n"),
+            (b"Machine name [", b"my-box\n"),
+        ] + self.answers()
+        output = self.terminal(answers, flags=[], auto_wizard=False)
+        self.assertIn("other-box belongs to another machine. Choose another name.", output)
+        self.assertEqual((self.home / ".fleet/machine-name").read_text().strip(), "my-box")
+
     def test_review_go_back_changes_identity_before_apply(self):
         self.defaults_origin()
         answers = self.answers()

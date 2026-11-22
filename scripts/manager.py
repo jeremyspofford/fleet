@@ -491,17 +491,16 @@ def ask_machine_name(home):
             "Press Enter to accept the proposed name.",
         ]
     )
+    proposed = registry.proposed_name(home=home)
     while True:
-        answer = ask(
-            "Machine name",
-            registry.proposed_name(),
-            detail=detail,
-            heading="Machine name",
-        )
-        if registry.NAME.fullmatch(answer):
+        answer = ask("Machine name", proposed, detail=detail, heading="Machine name")
+        if not registry.NAME.fullmatch(answer):
+            print("Use letters, digits, dots, hyphens, and underscores.")
+        elif answer in registry.taken_names(home):
+            print(f"{answer} belongs to another machine. Choose another name.")
+        else:
             registry.save_name(home, answer)
             return answer
-        print("Use letters, digits, dots, hyphens, and underscores.")
 
 
 def register_siblings(home):

@@ -4,11 +4,15 @@ Usage: python3 -m unittest discover -s tests -v. No real distro, wsl.exe, or net
 Help: PYTHONPATH=scripts:tests python3 tests/test_sibling_wsl.py --help.
 """
 
+import argparse
 import json
+import os
 from pathlib import Path
 import socket
+import tempfile
 import tomllib
 import unittest
+from unittest.mock import patch
 
 import test_command
 import test_deploy
@@ -212,6 +216,200 @@ class InteropTests(unittest.TestCase):
         self.assertEqual(len(machines), 1)
         self.assertEqual(next(iter(machines.values()))["distro"], "AlertVenture")
         self.assertIn("SUCCESS", self.cli("logs", "list"))
+
+
+# A fake wsl.exe that fails like Windows does: a UTF-16-LE error with an accented letter.
+FAILING_WSL = r"""#!/usr/bin/env python3
+import os, sys
+from pathlib import Path
+with Path(os.environ["FAKE_WSL_LOG"]).open("a") as log:
+    log.write(" ".join(sys.argv[1:]) + "\n")
+sys.stderr.buffer.write("Le nom spécifié est introuvable.\r\n".encode("utf-16-le"))
+sys.exit(1)
+"""
+
+
+def release(folder, version="24.04"):
+    path = Path(folder) / "os-release"
+    path.write_text(f'ID=ubuntu\nVERSION_ID="{version}"\n')
+    return path
+
+
+class CorrectionTests(unittest.TestCase):
+    """The seven corrections of report F-017. A temporary HOME; the real wsl.exe never runs."""
+
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.home = Path(folder.name) / "home"
+        (self.home / ".fleet").mkdir(parents=True)
+        self.folder = Path(folder.name)
+        environment = patch.dict(os.environ, {"HOME": str(self.home)})
+        environment.start()
+        self.addCleanup(environment.stop)
+        os.environ.pop("FLEET_MACHINE_NAME", None)
+
+    def save_registry(self, machines):
+        import registry
+        from common import atomic
+
+        data = {"schema_version": 1, "machines": {}, "removed": {}}
+        for name, fields in machines.items():
+            record = registry.blank(name) | {"enrolled": True} | fields
+            data["machines"][name] = record
+        atomic(self.home / registry.REGISTRY, registry.serialize(data))
+
+    def install_args(self, name=None, target=None, via=None):
+        return argparse.Namespace(
+            name=name, ssh_target=target, via=via, machine_name=None, return_target=None
+        )
+
+    def wsl_install(self, args, distros, hosts=(), terminal=True):
+        import command
+        import siblings
+
+        with (
+            patch.object(siblings, "interop", return_value=True),
+            patch.object(siblings, "distros", return_value=list(distros)),
+            patch.object(siblings, "own_distro", return_value="Ubuntu-A"),
+            patch.object(command.connections, "hosts", return_value=list(hosts)),
+            patch.object(command.manager, "has_terminal", return_value=terminal),
+        ):
+            return command.wsl_install(self.home, args)
+
+    # 1
+    def test_machine_name_flag_never_renames_an_enrollment_without_a_saved_name(self):
+        import registry
+        import run_index
+
+        (self.home / ".fleet/profile.toml").write_text('domain = "core"\n')
+        with self.assertRaisesRegex(ValueError, "already named .*Fleet never renames it"):
+            registry.save_name(self.home, "new")
+        self.assertFalse((self.home / run_index.NAME_FILE).exists())
+        self.assertEqual(run_index.machine_name(), socket.gethostname())
+        # The current name is accepted and saved.
+        registry.save_name(self.home, socket.gethostname())
+        self.assertEqual(run_index.saved_name(self.home), socket.gethostname())
+
+    # 2
+    def test_a_bare_target_keeps_its_ssh_meaning(self):
+        args = self.install_args("box", "debian")
+        self.assertFalse(self.wsl_install(args, ["Debian"], hosts=["debian"]))
+        self.assertEqual(args.ssh_target, "debian")
+
+    # 3
+    def test_a_saved_ssh_target_and_a_distro_stop_for_via(self):
+        self.save_registry({"debian": {"ssh_target": "me@debian.lan", "enrolled": False}})
+        with self.assertRaisesRegex(
+            ValueError,
+            "debian names a WSL distro and a saved SSH target. Add --via wsl or --via ssh.",
+        ):
+            self.wsl_install(self.install_args("debian"), ["Debian"])
+
+    # 4
+    def wsl_record(self):
+        import registry
+
+        self.save_registry(
+            {
+                "dell-wsl": {
+                    "machine_id": "a" * 32,
+                    "distro": "AlertVenture",
+                    "system_hostname": "DELL-XPS-8950",
+                    "recorded_at": "2026-11-22T00:00:00+00:00",
+                }
+            }
+        )
+        return registry.digest(self.home)
+
+    def test_a_digest_never_carries_local_facts(self):
+        members = self.wsl_record()["members"]
+        self.assertTrue(members)
+        for member in members:
+            self.assertNotIn("distro", member)
+            self.assertNotIn("system_hostname", member)
+
+    def test_a_digest_from_this_version_validates_under_the_base_rules(self):
+        # The field set that remote.validate_member accepted at 604fc0a, before this PR.
+        import registry
+
+        base = set(registry.FIELDS) | {"ssh_target", "recorded_at", "machine_id", "aliases"}
+        for member in self.wsl_record()["members"]:
+            self.assertLessEqual(set(member), base, member)
+
+    # 5
+    def test_a_wsl_target_without_name_deploys_and_lets_the_target_name_itself(self):
+        args = self.install_args(None, "wsl:Ubuntu-B")
+        self.assertTrue(self.wsl_install(args, ["Ubuntu-A", "Ubuntu-B"], terminal=True))
+        self.assertIsNone(args.machine_name)
+        self.assertEqual(args.name, "Ubuntu-B")
+        self.assertEqual(args.ssh_target, "wsl:Ubuntu-B")
+
+    # 6
+    def test_proposed_names_follow_the_rule(self):
+        import registry
+
+        examples = [
+            ("DELL-XPS-8950", "alertventure", "26.04", "dell-ubuntu-26.04-alertventure"),
+            ("DELL-XPS-8950", "Ubuntu-24.04", "24.04", "dell-ubuntu-24.04"),
+            ("DELL-XPS-8950", "Ubuntu", "24.04", "dell-ubuntu-24.04-ubuntu"),
+            ("DESKTOP-AAAA111", "Ubuntu-24.04", "24.04", "desktop-aaaa111-ubuntu-24.04"),
+            ("DESKTOP-BBBB222", "Ubuntu-24.04", "24.04", "desktop-bbbb222-ubuntu-24.04"),
+        ]
+        for host, distro, version, expected in examples:
+            with self.subTest(host=host, distro=distro):
+                name = registry.proposed_name(distro, release(self.folder, version), host)
+                self.assertEqual(name, expected)
+
+    def test_a_taken_proposed_name_gets_a_suffix(self):
+        import registry
+
+        self.save_registry({"dell-ubuntu-24.04": {"machine_id": "b" * 32}})
+        name = registry.proposed_name(
+            "Ubuntu-24.04", release(self.folder), "DELL-XPS-8950", home=self.home
+        )
+        self.assertEqual(name, "dell-ubuntu-24.04-2")
+
+    # 7
+    def test_sibling_environment_passes_wsl_utf8_to_windows(self):
+        import connections
+
+        with patch.dict(os.environ, {"WSLENV": "FOO"}):
+            self.assertEqual(connections.environment(sibling=True)["WSLENV"], "FOO:WSL_UTF8")
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("WSLENV", None)
+            self.assertEqual(connections.environment(sibling=True)["WSLENV"], "WSL_UTF8")
+
+    def test_a_utf16_error_from_wsl_exe_becomes_a_deploy_error(self):
+        import deploy
+        import remote
+        import siblings
+
+        tools = self.folder / "tools"
+        tools.mkdir()
+        (tools / "wsl.exe").write_text(FAILING_WSL)
+        (tools / "wsl.exe").chmod(0o700)
+        log = self.folder / "wsl.log"
+        variables = {
+            "PATH": str(tools) + ":" + without_wsl(os.environ["PATH"]),
+            "FAKE_WSL_LOG": str(log),
+            "WSL_DISTRO_NAME": "Ubuntu-A",
+        }
+        with patch.dict(os.environ, variables):
+            with self.assertRaises(deploy.DeployError) as caught:
+                deploy.facts_of("Bad", "wsl:Bad")
+            self.assertIn("spécifié", " ".join(caught.exception.lines))
+            # Registration moves on to the next distro instead of stopping.
+            with patch.object(siblings, "distros", return_value=["Bad", "Next"]):
+                self.assertEqual(siblings.register(self.home), [])
+            calls = log.read_text()
+            self.assertIn("-d Next", calls)
+            # A sibling update reports the member and returns, so update --all continues.
+            self.save_registry({"bad-box": {"ssh_target": "wsl:Bad", "machine_id": "c" * 32}})
+            report = {}
+            code = remote.execute(self.home, "bad-box", "update", report=report)
+        self.assertNotEqual(code, 0)
+        self.assertTrue(report["result"])
 
 
 if __name__ == "__main__":

@@ -205,9 +205,11 @@ def save_name(home, name):
     if not NAME.fullmatch(name or ""):
         raise ValueError("A machine name uses letters, digits, dots, hyphens, and underscores.")
     saved = run_index.saved_name(home)
-    enrolled = (home / ".fleet/profile.toml").exists()
-    if saved and saved != name and enrolled:
-        raise ValueError(f"This machine is already named {saved}. Fleet never renames it.")
+    if (home / ".fleet/profile.toml").exists():
+        # An enrollment from before saved names is named by the name it reports now.
+        current = saved or run_index.machine_name()
+        if name != current:
+            raise ValueError(f"This machine is already named {current}. Fleet never renames it.")
     # A first enrollment that stopped before its profile may choose again.
     if saved != name:
         path = home / run_index.NAME_FILE
@@ -222,12 +224,32 @@ def sanitized(text):
     return re.sub(r"[^a-z0-9.-]", "", text).strip("-.")
 
 
-def proposed_name(distro=None, release=Path("/etc/os-release")):
-    """Propose a WSL name: host, distro, version, then scope, such as dell-ubuntu-26.04-alertventure.
+# A Windows default host name starts with one of these words, so its first part says nothing.
+GENERIC_HOSTS = ("desktop", "laptop", "pc", "win")
 
-    The scope is the WSL distro's own name when it is not just the base distro and version.
+
+def taken_names(home):
+    """Return the names that other machine IDs use in this machine's registry."""
+    own = machine_id(home)
+    try:
+        machines = load(home)["machines"]
+    except (OSError, ValueError):
+        return set()
+    return {
+        key
+        for key, record in machines.items()
+        if record.get("machine_id") and record.get("machine_id") != own
+    }
+
+
+def proposed_name(distro=None, release=Path("/etc/os-release"), hostname=None, home=None):
+    """Propose a WSL name: host, distro and version, then scope, such as dell-ubuntu-26.04-alertventure.
+
+    The scope is the WSL distro's own name unless it equals the base distro and version.
+    A name that another machine ID uses gets -2, then -3, until it is free.
     """
     distro = os.environ.get("WSL_DISTRO_NAME", "") if distro is None else distro
+    hostname = socket.gethostname() if hostname is None else hostname
     facts = {}
     try:
         for line in release.read_text().splitlines():
@@ -235,14 +257,23 @@ def proposed_name(distro=None, release=Path("/etc/os-release")):
             facts[key] = item.strip().strip('"')
     except OSError:
         pass
-    host = sanitized(re.split(r"[-.]", socket.gethostname())[0])
-    base = [sanitized(facts.get("ID", "")), sanitized(facts.get("VERSION_ID", ""))]
-    scope = sanitized(distro)
-    if scope in ("-".join(part for part in base if part), base[0]):
-        scope = ""
-    return "-".join(part for part in [host, *base, scope] if part) or sanitized(
-        socket.gethostname()
+    host = sanitized(re.split(r"[-.]", hostname)[0])
+    if host in GENERIC_HOSTS:
+        host = sanitized(hostname)
+    base = "-".join(
+        part
+        for part in (sanitized(facts.get("ID", "")), sanitized(facts.get("VERSION_ID", "")))
+        if part
     )
+    scope = sanitized(distro)
+    if scope == base:
+        scope = ""
+    name = "-".join(part for part in (host, base, scope) if part) or sanitized(hostname)
+    taken = taken_names(home) if home is not None else set()
+    candidate, number = name, 2
+    while candidate in taken:
+        candidate, number = f"{name}-{number}", number + 1
+    return candidate
 
 
 def backfill(home):
@@ -388,7 +419,9 @@ LEGACY_DIGEST_FIELDS = (
     "recorded_at",
 )
 # The exchange carries the complete record. The SSH target stays with each viewer.
-EXCHANGED = (*FIELDS, "machine_id", "aliases", "recorded_at", "distro", "system_hostname")
+# The distro and the host name stay local facts. A viewer learns them when it meets a sibling.
+EXCHANGED = (*FIELDS, "machine_id", "aliases", "recorded_at")
+LOCAL_FACTS = ("distro", "system_hostname")
 
 
 def fact_time(record):
@@ -408,11 +441,6 @@ def digest(home):
         if not record["enrolled"]:
             continue
         compact = {field: record[field] for field in EXCHANGED if field in record}
-        # Older members reject unknown fields. Send the new facts only when they say something.
-        if not compact.get("distro"):
-            compact.pop("distro", None)
-        if compact.get("system_hostname") in ("", compact["hostname"]):
-            compact.pop("system_hostname", None)
         compact["recorded_at"] = fact_time(record)
         members.append(compact)
     return {"members": members, "removed": dict(sorted(data["removed"].items()))}

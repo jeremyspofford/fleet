@@ -586,11 +586,13 @@ fleet machines install AlertVenture --machine-name dell-wsl-alertventure
 ```
 
 1. NAME is a distro from `wsl.exe --list`. Fleet runs the deploy steps through `wsl.exe -d AlertVenture`.
-2. Use `--target DISTRO` when NAME is the new machine's name and differs from the distro.
+2. Use `--target wsl:DISTRO` when NAME is the new machine's name and differs from the distro.
+   A bare `--target` keeps its SSH meaning. It names a distro only with `--via wsl`.
 3. A scripted deploy needs `--machine-name`. With a terminal, the target's wizard asks for the name.
 4. Both registries record the other with a wsl connection, such as `Connection  wsl:AlertVenture`.
 
-A name that matches both a distro and an SSH config host stops. Add `--via wsl` or `--via ssh`; Fleet never guesses.
+A name that matches a distro and an SSH config host stops. So does a name with a saved SSH target.
+Add `--via wsl` or `--via ssh`; Fleet never guesses.
 `update`, `check`, `tools`, `machines uninstall`, and `update --all` reach a sibling through `wsl.exe`. A stopped distro starts.
 The result line names the sibling dispatch. A first enrollment in WSL registers every enrolled sibling both ways.
 A distro without Fleet never enters the registry.

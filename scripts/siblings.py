@@ -30,7 +30,7 @@ def distros():
         result = subprocess.run(
             ["wsl.exe", "--list", "--verbose"],
             capture_output=True,
-            env=connections.environment(),
+            env=connections.environment(sibling=True),
             timeout=connections.TIMEOUT,
         )
     except (OSError, subprocess.TimeoutExpired):

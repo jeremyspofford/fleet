@@ -227,7 +227,7 @@ def add_action_parameters(parser, name, action):
             parser.add_argument(
                 "--target",
                 dest="ssh_target",
-                help="user@host, or a distro with --via wsl; default: NAME",
+                help="user@host; a distro as wsl:DISTRO or with --via wsl; default: NAME",
             )
             parser.add_argument(
                 "--tool",
