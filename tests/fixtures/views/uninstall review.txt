@@ -2,7 +2,7 @@
 
 2 · Manager and content — no changes.
 
-3 · Files — 1 changed, 18 removed.
+3 · Files — 1 changed, 20 removed.
   ~ ~/.file
   − ~/.aliases
   − ~/.bashrc
@@ -13,6 +13,8 @@
   − ~/.config/git/local.gitconfig
   − ~/.config/mise/conf.d/fleet.toml
   − ~/.extra
+  − ~/.fleet/check.json
+  − ~/.fleet/install-stages.json
   − ~/.fleet/last-run.json
   − ~/.fleet/outputs.json
   − ~/.fleet/profile.toml

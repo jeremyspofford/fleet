@@ -66,6 +66,9 @@ class WizardTests(unittest.TestCase):
                 continue
             if name == ".fleet/runs" or name.startswith(".fleet/runs/"):
                 continue
+            # The install stage record keeps a chosen name for the next run, like the run index.
+            if name == ".fleet/install-stages.json":
+                continue
             value = (
                 ("link", os.readlink(path))
                 if path.is_symlink()
