@@ -521,6 +521,15 @@ class FleetApp(App[str]):
             except WorkerCancelled:
                 pass
 
+    async def stop_dashboard(self):
+        """Stop the dashboard worker and wait, so its child process ends before the loop closes."""
+        if self.worker and not self.worker.is_finished:
+            self.worker.cancel()
+            try:
+                await self.worker.wait()
+            except WorkerCancelled:
+                pass
+
     async def action_back(self):
         if self.uninstalled:
             self.exit()
@@ -541,6 +550,7 @@ class FleetApp(App[str]):
             elif len(self.screen_stack) == 1:
                 self.worker = self.load_dashboard()
         else:
+            await self.stop_dashboard()
             self.exit()
 
     async def action_quit(self):
@@ -554,6 +564,7 @@ class FleetApp(App[str]):
                 )
         else:
             await self.stop_read()
+            await self.stop_dashboard()
             self.exit()
 
     def _fatal_error(self):

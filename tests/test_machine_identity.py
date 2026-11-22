@@ -91,6 +91,29 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(registry.resolve(dell, "old-name"), "new-name")
         self.assertEqual(registry.resolve(dell, "me@lab"), "new-name")
 
+    def test_the_answering_machine_renames_its_record_even_at_the_same_second(self):
+        # Report F-037: a contact within the same second as the copied record renamed nothing.
+        when = "2026-11-22T17:57:14+00:00"
+        target = record("target-host", machine_id="c" * 32, recorded_at=when)
+        caller = {"schema_version": 1, "machines": {}, "removed": {}}
+        caller["machines"]["beelink"] = dict(target, hostname="beelink", ssh_target="mini-pc")
+        answered = {"machine_id": "c" * 32, "hostname": "target-host"}
+        digest = {"members": [target], "removed": {}}
+        changes = registry.merge(caller, digest, "caller", "b" * 32, "beelink", answered)
+        self.assertEqual(changes["updated"], ["target-host (was beelink)"])
+        self.assertEqual(sorted(caller["machines"]), ["target-host"])
+        self.assertEqual(caller["machines"]["target-host"]["ssh_target"], "mini-pc")
+        # The same record again changes nothing, so a quiet contact writes nothing.
+        again = registry.merge(caller, digest, "caller", "b" * 32, "target-host", answered)
+        self.assertEqual(again, {"added": [], "updated": [], "dropped": []})
+        # Another member's record at the same second still loses to the saved one.
+        other = record("other", machine_id="d" * 32, recorded_at=when, domain="work")
+        caller["machines"]["other"] = dict(other, domain="core")
+        registry.merge(
+            caller, {"members": [other], "removed": {}}, "caller", "b" * 32, "target-host", answered
+        )
+        self.assertEqual(caller["machines"]["other"]["domain"], "core")
+
     def test_a_machine_whose_hostname_changes_renames_its_own_record(self):
         home = self.home("box")
         with patch("socket.gethostname", return_value="before"):

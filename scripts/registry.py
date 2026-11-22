@@ -542,7 +542,14 @@ def merge(data, received, own, own_id="", contacted=None, answered=None):
             bound = bool(found) and not record.get("machine_id")
             if bound:
                 record["machine_id"] = found  # A record from before IDs takes the member's ID.
-            if fact["recorded_at"] <= fact_time(record) and len(changes["dropped"]) == before:
+            # The machine that answered this contact is the authority on itself. Its record
+            # applies whenever it differs, even when its time ties at one-second resolution.
+            authority = bool(found) and found == answered.get("machine_id")
+            current = key == name and all(
+                record.get(field) == fact[field] for field in EXCHANGED if field in fact
+            )
+            older = fact["recorded_at"] <= fact_time(record)
+            if (current if authority else older) and len(changes["dropped"]) == before:
                 if bound:
                     changes["updated"].append(key)
                 continue
