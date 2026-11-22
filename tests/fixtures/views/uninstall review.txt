@@ -11,7 +11,7 @@
   − ~/.config/dotfiles/aliases/personal.zsh
   − ~/.config/dotfiles/domain
   − ~/.config/git/local.gitconfig
-  − ~/.config/mise/config.toml
+  − ~/.config/mise/conf.d/fleet.toml
   − ~/.extra
   − ~/.fleet/last-run.json
   − ~/.fleet/outputs.json

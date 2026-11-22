@@ -1504,7 +1504,8 @@ This design treats that shared folder as the skills part of the payload.
 The rulings leave some points open. For other points, this document had to interpret a ruling.
 The first list holds the points that need the owner. Each one carries a recommendation.
 The second list holds the smaller proposals in this document. The owner can overrule any of them.
-The owner ruled on points 1, 4, 7, 9, and 16 on 2026-11-20. The other points stay open.
+The owner ruled on twelve points on 2026-11-20: 1, 4, 5, 7, 8, 9, 10, 11, 13, 14, 15, and 16.
+Points 2, 3, 6, and 12 stay open. Claude Code's part of point 7 and the restore part of point 11 also stay open.
 The build made a choice for most points. Each ruled point keeps its recommendation as the record of the advice given.
 
 Each point carries one mark for `main` at commit `2f1e154`. The mark names the file that proves it:
@@ -1548,6 +1549,7 @@ A mark that differs from a ruling shows work that the build still needs.
    Recommendation: one link per skill in the first build. Switch only after a session test passes.
    BUILT DIFFERENTLY: one link, `~/.claude/skills/fleet`, leads to the plugin folder. That folder links to `~/.agents/skills`.
    Proof: `scripts/agent_deploy.py`. This document holds no record of a session test.
+   RULED 2026-11-20: one link per skill in `~/.claude/skills`. A skill keeps the name `/NAME` in every agent.
 6. Does Codex get one hook entry per hook, or one entry per event that runs a Fleet script?
    The second form is set once. Fleet's script must then match tools and merge the hooks' results.
    Recommendation: one entry per hook. Codex then keeps its own matching, time limits, and exit codes.
@@ -1576,6 +1578,7 @@ A mark that differs from a ruling shows work that the build still needs.
    BUILT DIFFERENTLY: Fleet runs `codex plugin marketplace add` before `codex plugin add`, and it passes `--consent`.
    Fleet runs no Claude Code installer, so `--yes` never arises. A Gemini CLI install from a local path fails the run.
    Proof: `scripts/agent_deploy.py`.
+   RULED 2026-11-20: Fleet omits a Gemini CLI extension install from a local folder. It lists a manual step, and the run continues.
 9. What happens when an agent already holds a declared plugin that Fleet did not install?
    Recommendation: treat it as the user's own. Record nothing, never uninstall it, and report it once.
    Fleet learns this from the agent's plugin records on disk. It runs no agent command for that check.
@@ -1586,10 +1589,15 @@ A mark that differs from a ruling shows work that the build still needs.
     Option A reports a manual step. Option B removes the module from the `plugin` list by a file edit.
     Recommendation: option A first. Move to option B after a test shows that OpenCode stops loading the module.
     BUILT DIFFERENTLY: option B. Fleet removes the module from the `plugin` list. Proof: `scripts/agent_deploy.py`.
+    RULED 2026-11-20: option B. Fleet removes an OpenCode plugin from OpenCode's plugin list. `main` already does this.
 11. Do `fleet uninstall` and rollback remove the plugins that Fleet installed?
     Recommendation: no. Uninstall keeps installed tools today. Keep the plugins, and list each removal command.
-    BUILT DIFFERENTLY: uninstall and restore keep the plugins, but list no removal command.
+    BUILT DIFFERENTLY: uninstall and restore run no plugin installer, and they list no removal command.
+    Uninstall does remove Fleet's listing entries, so Claude Code, OpenCode, and Pi stop loading those plugins.
     Proof: `scripts/agent_deploy.py`, function `removal_operations`.
+    Correction: the mark of 2026-11-20 said that uninstall keeps every plugin. It keeps only those that Codex and Gemini CLI installed.
+    RULED 2026-11-20, against the recommendation: `fleet uninstall` uninstalls the plugins that Fleet installed. It prints no command for the user.
+    The ruling does not cover a backup restore. That part stays open.
 12. When does a remote profile change apply, and does a remote domain count as a person's choice?
     The ruling says that the target's next update applies a remote domain.
     Fleet records whether a person chose each machine's domain.
@@ -1602,13 +1610,17 @@ A mark that differs from a ruling shows work that the build still needs.
     BUILT DIFFERENTLY: each agent starts the gateway as a `stdio` server, and connectors keep their own entries.
     Each agent's gateway entry names every variable that a server reads. A new variable changes the entry.
     Proof: `scripts/agent_deploy.py`, function `gateway`; `scripts/gateway.py`.
+    RULED 2026-11-20: the gateway reads `~/.secrets` itself.
 14. What is the marketplace feature called? The name does not block the build. The owner picks it before phase 2 ships.
     Recommendation: avoid the bare word marketplace. Claude Code and Codex already use it for their plugin catalogs.
     BUILT DIFFERENTLY: phase 2 shipped as `fleet marketplaces`. Proof: `scripts/command_arguments.py`, `docs/MARKETPLACES.md`.
+    RULED 2026-11-20, against the recommendation: keep the name `fleet marketplaces`. `main` already does this.
 15. How does a bridge plugin reach OpenCode and Pi? The phase 4 study answers this.
     Recommendation: study a linked code file first. Both agents load code files from a folder (Documented).
     NOT BUILT: no bridge code exists. The study recommends rendering each bridge into the tree, behind one pointer.
     Proof: `docs/BRIDGE-SPIKE.md`. That study asks the owner four questions of its own.
+    RULED 2026-11-20: the study's option A. Fleet copies each bridge into `~/.fleet/agents` and links it.
+    The study's other three questions stay open.
 16. How does Fleet install a plugin for Claude Code, OpenCode, and Pi? The build raised this point.
     Ruling 7 says that Fleet installs through the agent's own installer.
     Option A runs each agent's installer command. Option B writes an entry in the agent's plugin listing. The agent then installs the plugin itself.

@@ -27,6 +27,8 @@ import dotfiles_library
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
+# Tests see a plain Linux host, as CI does. WSL tests set the distro name themselves.
+os.environ.pop("WSL_DISTRO_NAME", None)
 sys.path.insert(0, str(ROOT / "scripts"))
 from manager import domain_details, exact_version, installed_defaults, validate_profile
 from common import toml
@@ -397,8 +399,11 @@ class EnrollmentTests(unittest.TestCase):
         profile = tomllib.loads((self.home / ".fleet/profile.toml").read_text())
         self.assertEqual(profile["pins"], {"node": "24.1.0", "python": "3.13.0"})
         self.assertEqual(profile["git_name"], "Example Owner")
-        rendered = tomllib.loads((self.home / ".config/mise/config.toml").read_text())
+        rendered = tomllib.loads((self.home / ".config/mise/conf.d/fleet.toml").read_text())
         self.assertEqual(rendered["settings"], {"experimental": False})
+        # Every value moved into Fleet's fragment, so the old global file went to the backup.
+        self.assertFalse((self.home / ".config/mise/config.toml").exists())
+        self.assertIn("Mise: Fleet's pins moved to ~/.config/mise/conf.d/fleet.toml.", output)
         before = (self.home / ".fleet/profile.toml").read_bytes()
         self.install(defaults=False)
         self.assertEqual((self.home / ".fleet/profile.toml").read_bytes(), before)
@@ -585,7 +590,8 @@ class EnrollmentTests(unittest.TestCase):
         self.assertFalse(profile["domain_chosen"])
         self.assertNotIn("node", profile["pins"])
         self.assertNotIn(
-            "node", tomllib.loads((self.home / ".config/mise/config.toml").read_text())["tools"]
+            "node",
+            tomllib.loads((self.home / ".config/mise/conf.d/fleet.toml").read_text())["tools"],
         )
         # Skipped identity/domain gaps remain visible on the next plain run.
         self.terminal(self.gap_answers()[:3], plain=True)

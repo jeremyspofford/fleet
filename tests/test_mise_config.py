@@ -1,10 +1,12 @@
-"""Generate the Mise config in a form that Mise itself can edit.
+"""Generate Fleet's Mise fragment in a form Mise can edit, and leave config.toml to the user.
 
 Mise edits a [tools] table in place. A quoted "tools" inline table makes mise use panic.
+Fleet's pins live in ~/.config/mise/conf.d/fleet.toml. mise use -g writes config.toml.
 Usage: python3 -m unittest discover -s tests -v.
 Help: PYTHONPATH=scripts:tests python3 tests/test_mise_config.py --help.
 """
 
+import json
 import shutil
 import subprocess
 import tomllib
@@ -14,7 +16,8 @@ from common import toml, toml_tables
 import test_manager as helpers
 from test_manager import command
 
-CONFIG = ".config/mise/config.toml"
+CONFIG = ".config/mise/conf.d/fleet.toml"
+USER = ".config/mise/config.toml"
 
 
 class MiseConfigTests(unittest.TestCase):
@@ -75,32 +78,75 @@ class MiseConfigTests(unittest.TestCase):
         self.assertIs(tomllib.loads(self.config())["settings"]["experimental"], False)
         self.assert_mise_use_succeeds()
 
-    def test_old_inline_form_converts_on_update_and_keeps_pins(self):
+    def old_layout(self):
+        """Recreate what earlier Fleet applied: its pins in the global config.toml."""
+        import manager
+
+        rendered = tomllib.loads(self.config())
+        old = toml_tables(rendered)
+        source = self.home / ".fleet/chezmoi-source"
+        (source / "dot_config/mise/conf.d/fleet.toml").unlink()
+        (self.home / CONFIG).unlink()
+        # Earlier Fleet never wrote the fragment, so chezmoi holds no memory of it.
+        command(
+            "chezmoi",
+            "state",
+            "delete",
+            "--bucket=entryState",
+            "--key=" + str(self.home / CONFIG),
+            env=self.env,
+            cwd=self.home,
+        )
+        (source / "dot_config/mise/config.toml").write_text(old)
+        command("chezmoi", "apply", "--force", str(self.home / USER), env=self.env, cwd=self.home)
+        outputs = self.home / ".fleet/outputs.json"
+        recorded = json.loads(outputs.read_text())
+        recorded.pop(CONFIG)
+        recorded[USER] = manager.fingerprint(self.home / USER)
+        outputs.write_text(json.dumps(recorded))
+        return rendered
+
+    def test_an_old_machine_moves_its_pins_and_keeps_its_own_mise_entries(self):
         self.install()
-        # Record a pin the way enrollment does, so the update must carry it through.
+        # Record pins the way enrollment does, so the update must carry them through.
         saved = self.home / ".fleet/profile.toml"
         profile = tomllib.loads(saved.read_text())
         profile["pins"] = {"node": "24.1.0", "python": "3.13.0"}
         saved.write_text(toml(profile))
         self.install(defaults=False)
-        profile = tomllib.loads((self.home / ".fleet/profile.toml").read_text())
-        rendered = tomllib.loads(self.config())
-        self.assertTrue(profile["pins"])
-        self.assertEqual(rendered["tools"], profile["pins"])
-        # Recreate what earlier Fleet applied: the same values as quoted inline tables.
-        old = toml(rendered)
-        self.assertIn('"tools" = {', old)
-        source = self.home / ".fleet/chezmoi-source/dot_config/mise/config.toml"
-        self.assertTrue(source.is_file())
-        source.write_text(old)
-        command("chezmoi", "apply", "--force", str(self.home / CONFIG), env=self.env, cwd=self.home)
-        self.assertEqual(self.config(), old)
-        self.install(defaults=False)
+        rendered = self.old_layout()
+        # A local mise use -g edits the old Fleet-managed file, as in report F-007.
+        result = self.mise("use", "-g", "jq@system")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        output = self.install(defaults=False)
+        self.assertIn("Mise: ~/.config/mise/config.toml keeps only your own entries", output)
+        self.assertEqual(tomllib.loads((self.home / USER).read_text()), {"tools": {"jq": "system"}})
         self.assert_tables(self.config())
         self.assertEqual(tomllib.loads(self.config()), rendered)
-        after = tomllib.loads((self.home / ".fleet/profile.toml").read_text())
-        self.assertEqual(after["pins"], profile["pins"])
-        self.assert_mise_use_succeeds()
+        after = tomllib.loads(saved.read_text())
+        self.assertEqual(after["pins"], {"node": "24.1.0", "python": "3.13.0"})
+        # The next mise use -g edits only the user's file. No Fleet run fails over it.
+        before = self.config()
+        result = self.mise("use", "-g", "shfmt@system")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.config(), before)
+        self.install(defaults=False)
+        self.assertEqual(
+            tomllib.loads((self.home / USER).read_text()),
+            {"tools": {"jq": "system", "shfmt": "system"}},
+        )
+        status = command("chezmoi", "status", env=self.env, cwd=self.home)
+        self.assertEqual(status.strip(), "")
+
+    def test_an_old_machine_without_own_entries_retires_the_old_file(self):
+        self.install()
+        self.old_layout()
+        output = self.install(defaults=False)
+        self.assertIn("Mise: Fleet's pins moved to ~/.config/mise/conf.d/fleet.toml.", output)
+        self.assertFalse((self.home / USER).exists())
+        backups = sorted((self.home / ".fleet/backups").glob("*/retired/" + USER))
+        self.assertTrue(backups, "the old file stays in the run's backup")
+        self.assertTrue((self.home / CONFIG).is_file())
 
 
 def usage():

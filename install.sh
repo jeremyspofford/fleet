@@ -134,6 +134,7 @@ Options:
   --git-name NAME  Record the Git author name.
   --group NAME=on|off Include or exclude a content group. Repeat for more groups.
   -h, --help       Print full help.
+  --machine-name NAME Name this machine in the fleet at first enrollment. Fleet never renames it.
   --repo URL       Content Git repository; default: https://github.com/jeremyspofford/dotfiles.
                    Plain repositories use real names. Chezmoi repositories use native source names.
   --tool TOOL=VERSION Record a full tool version, such as node=24.14.1. Repeat for more tools.
@@ -202,7 +203,7 @@ while [[ $# -gt 0 ]]; do
 		exit 0
 		;;
 	--configure | --defaults | --adopt | --update-bash) shift ;;
-	--repo | --format | --domain | --git-name | --git-email | --pin | --tool | --group | --agents)
+	--repo | --format | --domain | --git-name | --git-email | --machine-name | --pin | --tool | --group | --agents)
 		[[ $# -ge 2 && -n $2 && $2 != --* ]] || {
 			usage >&2
 			exit 2

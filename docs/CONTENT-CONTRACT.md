@@ -138,8 +138,9 @@ Hooks and stdio servers run commands from content. Use only trusted repositories
 
 ## Manager-owned outputs
 
-Fleet reserves `~/.config/git/local.gitconfig`, `~/.config/dotfiles/domain`, `~/.config/mise/config.toml`, and `~/.secrets`.
-Plain content can provide Mise defaults. The manager replaces that output with defaults merged under profile tool versions.
+Fleet reserves `~/.config/git/local.gitconfig`, `~/.config/dotfiles/domain`, `~/.config/mise/conf.d/fleet.toml`, and `~/.secrets`.
+Plain content can provide Mise defaults in `.config/mise/config.toml`. Fleet merges them under profile tool versions into its fragment.
+Content never manages `~/.config/mise/config.toml`. That file belongs to the user, and `mise use -g` writes there.
 Native chezmoi content must leave reserved paths unmanaged. Other native outputs still use the original checkout.
 Fleet also owns `~/.config/chezmoi/chezmoi.toml`. Content config templates never write that file.
 After writing it, Fleet updates chezmoi's saved template checksum, an identifier for template contents.

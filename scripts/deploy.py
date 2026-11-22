@@ -313,6 +313,8 @@ def installer_arguments(options, scripted):
         words += ["--tool", f"{tool}={version}"]
     if options.repo:
         words += ["--repo", options.repo]
+    if getattr(options, "machine_name", None):
+        words += ["--machine-name", options.machine_name]
     if scripted:
         words.append("--defaults")
     return words
@@ -343,13 +345,10 @@ def enroll(name, target, options, terminal, bash):
     for staged, content in files.items():
         if call(name, target, stage_command(staged), content).returncode:
             raise DeployError("enrollment failed", [f"{name}: could not stage the installer."])
-    ssh = ["ssh", "-t" if terminal else "-T"]
-    for option in connections.OPTIONS:
-        ssh += ["-o", option]
-    ssh += ["--", target, RUN_COMMAND]
+    command = connections.argv(target, RUN_COMMAND, terminal)
     print(f"{name}: running the Fleet installer on the target.", flush=True)
     stdin = None if terminal else subprocess.DEVNULL
-    code = subprocess.run(ssh, stdin=stdin, env=dict(os.environ, LC_ALL="C")).returncode
+    code = subprocess.run(command, stdin=stdin, env=dict(os.environ, LC_ALL="C")).returncode
     if code == 255:
         raise DeployError("unreachable", [f"{name}: the connection closed during enrollment."], 2)
     return code
@@ -424,7 +423,7 @@ def return_target(home, name, options, terminal):
             print(f"{error} Try again, or type skip.")
 
 
-def register_caller(home, target, name, options, terminal):
+def register_caller(home, target, name, options, terminal, announce=True):
     """Add the target to this machine's registry under the shared lock and backup rules.
 
     The target names itself: its hostname is its fleet name. NAME only reaches it. A record that
@@ -453,9 +452,13 @@ def register_caller(home, target, name, options, terminal):
                 "enrollment failed", [f"{name}: it reported this machine's own name and no ID."]
             )
         data["machines"][key].update(ssh_target=target, recorded_at=fact["recorded_at"])
+        # This machine met the target itself, so it records the target's local facts too.
+        data["machines"][key].update(
+            {name: facts[name] for name in registry.LOCAL_FACTS if facts.get(name)}
+        )
 
     result = command.change_registry(home, add)
-    if not result and facts["hostname"] != name:
+    if not result and announce and facts["hostname"] != name:
         print(f"{name}: enrolled as {facts['hostname']}, the name that machine reports.")
     return result
 

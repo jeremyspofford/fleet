@@ -87,6 +87,8 @@ def view(home):
         "state": local.get("result", "not recorded"),
         "observed_at": local.get("last_run") or None,
     }
+    if local.get("distro"):
+        root["distro"] = local["distro"]
     try:
         cache = home / updates.CACHE
         if cache.is_symlink() or not cache.parent.resolve().is_relative_to(home.resolve()):
@@ -123,6 +125,8 @@ def view(home):
                 "domain": record.get("domain") or "not recorded",
                 "state": contact.get("state", "never contacted"),
                 "observed_at": contact.get("observed_at"),
+                # A WSL member names its distro. Other members leave the field out.
+                **({"distro": record["distro"]} if record.get("distro") else {}),
             }
         )
     return {
@@ -143,7 +147,8 @@ def observation(item):
 def render(view):
     root = view["this_machine"]
     lines = [style.section("Topology from " + view["from"]), view["scope"], ""]
-    lines += [root["name"] + " · domain " + root["domain"], "  " + observation(root)]
+    distro = " · distro " + root["distro"] if root.get("distro") else ""
+    lines += [root["name"] + distro + " · domain " + root["domain"], "  " + observation(root)]
     for index, item in enumerate(view["machines"]):
         last = index == len(view["machines"]) - 1
         branch, indent = ("└── ", "    ") if last else ("├── ", "│   ")
@@ -151,11 +156,14 @@ def render(view):
         connection = (
             "no connection"
             if not target
+            else target
+            if target.startswith("wsl:")
             else "SSH uses this name"
             if target == item["name"]
             else "SSH " + target
         )
-        label = item["name"] + " · " + connection + " · domain " + item["domain"]
+        distro = " · distro " + item["distro"] if item.get("distro") else ""
+        label = item["name"] + distro + " · " + connection + " · domain " + item["domain"]
         lines += textwrap.wrap(
             label,
             100,

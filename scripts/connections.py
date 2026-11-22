@@ -159,19 +159,52 @@ def pick(home, purpose="connect"):
     return None if target == "cancel" else target
 
 
-def invoke(target, command, payload=None, *, probe=False):
-    arguments = ["ssh", "-T"]
+# A sibling WSL distro on this Windows host is reached through wsl.exe, never through SSH.
+WSL = "wsl:"
+INTEROP_STEP = "enable interop in /etc/wsl.conf ([interop] enabled = true), then restart WSL."
+
+
+def is_sibling(target):
+    return bool(target) and target.startswith(WSL)
+
+
+def argv(target, command, terminal=False):
+    """Return the command line that runs COMMAND on TARGET: SSH, or wsl.exe for a sibling."""
+    if is_sibling(target):
+        # The distro starts if it is stopped. --exec skips the default shell, so quoting holds.
+        return ["wsl.exe", "-d", target[len(WSL) :], "--cd", "~", "--exec", "sh", "-c", command]
+    arguments = ["ssh", "-t" if terminal else "-T"]
     for option in OPTIONS:
         arguments.extend(["-o", option])
-    arguments.extend(["--", target, command])
-    return subprocess.run(
-        arguments,
-        input=payload if payload is not None else "",
-        text=True,
+    return arguments + ["--", target, command]
+
+
+def environment(sibling=False):
+    """Return the environment for SSH or wsl.exe. wsl.exe sees WSL_UTF8 only through WSLENV."""
+    result = dict(os.environ, SSH_ASKPASS_REQUIRE="never", LC_ALL="C", WSL_UTF8="1")
+    if sibling:
+        shared = [name for name in os.environ.get("WSLENV", "").split(":") if name]
+        result["WSLENV"] = ":".join([*shared, "WSL_UTF8"] if "WSL_UTF8" not in shared else shared)
+    return result
+
+
+def decoded(data):
+    """Decode command output. wsl.exe errors may be UTF-16-LE; a bad byte never raises."""
+    if not data:
+        return ""
+    return data.decode("utf-16-le" if b"\0" in data else "utf-8", errors="replace")
+
+
+def invoke(target, command, payload=None, *, probe=False):
+    result = subprocess.run(
+        argv(target, command),
+        input=(payload if payload is not None else "").encode(),
         capture_output=True,
-        env=dict(os.environ, SSH_ASKPASS_REQUIRE="never", LC_ALL="C"),
+        env=environment(is_sibling(target)),
         timeout=TIMEOUT if probe else None,
     )
+    result.stdout, result.stderr = decoded(result.stdout), decoded(result.stderr)
+    return result
 
 
 def one_line(text):
@@ -180,6 +213,12 @@ def one_line(text):
 
 def failure(home, name, target, error):
     """Return one error line and one next step, using the host OS for missing SSH."""
+    if is_sibling(target):
+        if isinstance(error, FileNotFoundError):
+            return "wsl.exe is unavailable; Windows interop is off", INTEROP_STEP
+        return "the sibling distro did not answer: " + one_line(str(error))[:200], (
+            f"run wsl.exe -d {target[len(WSL) :]} once to check the distro; then retry."
+        )
     if isinstance(error, FileNotFoundError):
         system = registry.os_name()
         step = (

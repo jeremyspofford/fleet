@@ -169,6 +169,9 @@ Use `fleet tools set TOOL --version VERSION` to select and install a version. Mi
 Use `fleet tools update TOOL` to select and install the newest version that Mise finds. The profile still records that exact version.
 Use `fleet tools adopt` to record the installed version of each tool without a recorded version. Adopt installs nothing.
 A saved tool choice selects a version. It does not mean that version is installed.
+Fleet writes the recorded versions to `~/.config/mise/conf.d/fleet.toml`. `~/.config/mise/config.toml` is yours, and `mise use -g` writes there.
+Mise reads `config.toml` after `conf.d`, so your own entry for a tool overrides Fleet's.
+An update from an older Fleet moves Fleet's pins out of `config.toml`. Your own entries stay, and the run prints one line.
 Setup asks when identity is incomplete, the domain choice is unconfirmed, or a tool version floats, such as `latest`.
 Prompts show recorded values. Press Enter to use the stated action, or type `skip` to leave a choice incomplete.
 For identity, Enter keeps a nonempty displayed value. Type `skip` explicitly to leave identity empty.
@@ -512,7 +515,12 @@ Each completed apply, update, restore, or backup refreshes this machine's record
 The record contains machine ID, hostname, operating system, domain, domain confirmation, content repository and commit, manager version, last run, and last backup.
 It also records the home folder, RUN.json path, result, and whether this machine remains enrolled. Full commit IDs and paths stay in the file.
 The machine ID identifies the record. Each machine generates its ID once, at enrollment, in `~/.fleet/machine-id`.
-A machine's fleet name is the hostname it reports. When the hostname changes, the next contact renames its member in place.
+A machine's fleet name is chosen on the machine at enrollment and saved in `~/.fleet/machine-name`. Fleet never takes it from the SSH config.
+An enrollment from before saved names keeps the hostname it reported. Its first run or check saves that name.
+Fleet never changes a saved name.
+A new WSL enrollment asks for the name in its wizard. It proposes host, distro, version, and scope, such as `dell-ubuntu-26.04-alertventure`.
+`--machine-name NAME` supplies the name for a scripted enrollment. The record also keeps the hostname and, in WSL, the distro as displayed facts.
+Members match by machine ID. When a member reports a new name, the next contact renames its record in place.
 Two machines that report one hostname both list. The second lists as `HOSTNAME~ID`, and the list notes the collision.
 Records from before IDs merge when one is this machine's own record and both share a last run time and content commit.
 Without that evidence, both records stay, and the list names the possible duplicate.
@@ -546,7 +554,7 @@ fleet machines install mini-pc
 ```
 
 NAME is a host from your SSH config, or any name with `--target user@host`. NAME only reaches the target.
-The target's own hostname becomes its fleet name in every list. No registration step comes first.
+The target's own saved name becomes its fleet name in every list. No registration step comes first.
 Run `fleet machines install` without NAME to pick from your SSH config hosts and saved connections. The picker needs a terminal.
 SSH is the secure connection tool. The deploy uses your SSH config and keys, in batch mode, without password prompts.
 
@@ -560,6 +568,7 @@ The deploy runs these steps in order:
 6. Prove the loop. Run a remote status against the target and print its result after your own run review.
 
 A missing floor item stops the deploy. The report names each item and the one command that installs it.
+
 Fleet installs no system packages and uses no admin rights. The bootstrap also needs sha256sum or shasum.
 A CA certificate bundle lets curl verify HTTPS; the probe reports `ca-certificates` when verification fails.
 A network failure during the probe is not a floor item. Later steps report it.
@@ -569,6 +578,29 @@ Without a terminal, the deploy stops before installing unless you pass `--update
 The target then runs the deploy script and the installer with that bash, named by its full path, never found through PATH.
 The Python bootstrap keeps its own Mise store at `~/.fleet/mise`, apart from your tool versions.
 The installer reads the target's facts: its scan, wizard steps, and review describe the target.
+
+### Sibling WSL distros
+
+Two WSL distros on one Windows host are two machines. They share one hostname, so their saved names tell them apart.
+A sibling is another distro on this host whose own Fleet answers with a record. Fleet reaches it through `wsl.exe`, never SSH.
+
+```sh
+fleet machines install AlertVenture --machine-name dell-wsl-alertventure
+```
+
+1. NAME is a distro from `wsl.exe --list`. Fleet runs the deploy steps through `wsl.exe -d AlertVenture`.
+2. Use `--target wsl:DISTRO` when NAME is the new machine's name and differs from the distro.
+   A bare `--target` keeps its SSH meaning. It names a distro only with `--via wsl`.
+3. A scripted deploy needs `--machine-name`. With a terminal, the target's wizard asks for the name.
+4. Both registries record the other with a wsl connection, such as `Connection  wsl:AlertVenture`.
+
+A name that matches a distro and an SSH config host stops. So does a name with a saved SSH target.
+Add `--via wsl` or `--via ssh`; Fleet never guesses.
+`update`, `check`, `tools`, `machines uninstall`, and `update --all` reach a sibling through `wsl.exe`. A stopped distro starts.
+The result line names the sibling dispatch. A first enrollment in WSL registers every enrolled sibling both ways.
+A distro without Fleet never enters the registry.
+Without Windows interop, enrollment still succeeds. One line says siblings were not checked and names the step to enable interop.
+Fleet never creates, deletes, or configures a distro. It never edits `/etc/wsl.conf`, `.wslconfig`, or your SSH config.
 
 A scripted deploy passes `--domain`, `--git-name`, and `--git-email`, and optionally `--repo` and repeated `--tool TOOL=VERSION`.
 Without a terminal and without those three flags, the deploy stops before connecting and names the missing flags.
