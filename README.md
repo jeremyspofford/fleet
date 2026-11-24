@@ -518,8 +518,16 @@ The machine ID identifies the record. Each machine generates its ID once, at enr
 A machine's fleet name is chosen on the machine at enrollment and saved in `~/.fleet/machine-name`. Fleet never takes it from the SSH config.
 An enrollment from before saved names keeps the hostname it reported. Its first run or check saves that name.
 Fleet never changes a saved name.
-A new WSL enrollment asks for the name in its wizard. It proposes host, distro, version, and scope, such as `dell-ubuntu-26.04-alertventure`.
-`--machine-name NAME` supplies the name for a scripted enrollment. The record also keeps the hostname and, in WSL, the distro as displayed facts.
+Every first enrollment asks for the name before its other steps. Press Enter to accept the proposal, or type another name.
+The proposal joins the host and the system. Linux: `dell-fedora`. macOS: `dell-macos`. WSL: `dell-ubuntu-26.04-alertventure`, with the distro as scope.
+A name that names this distro with another version, such as `dell-ubuntu-24.04` on 26.04, is asked again.
+`--machine-name NAME` supplies the name for a scripted enrollment. Without a terminal and without it, a first enrollment stops before any write.
+The record also keeps the hostname and, in WSL, the distro as displayed facts.
+
+`~/.fleet/install-stages.json` records each completed install stage: detect, software, enrollment, and verify.
+Run the same command again after a stop. Fleet skips a completed detect stage, reuses its name, and says so in one line.
+A first enrollment ends with `fleet check` and a section that lists what ran automatically, what was skipped, and what is left to do.
+A failed check leaves the enrollment complete. The section names the failure and the command that repeats it.
 Members match by machine ID. When a member reports a new name, the next contact renames its record in place.
 Two machines that report one hostname both list. The second lists as `HOSTNAME~ID`, and the list notes the collision.
 Records from before IDs merge when one is this machine's own record and both share a last run time and content commit.

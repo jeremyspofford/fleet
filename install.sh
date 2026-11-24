@@ -195,7 +195,9 @@ Author: Jeremy Spofford / Aria Labs; Version: $DOTFILES_VERSION (VERSION).
 EOF
 }
 arguments=("$@")
+machine_name_given=0
 while [[ $# -gt 0 ]]; do
+	[[ $1 == --machine-name ]] && machine_name_given=1
 	case $1 in
 	-h | --help)
 		summary_expected=0
@@ -253,6 +255,34 @@ for argument in "${arguments[@]}"; do
 	if [[ $argument != --update-bash ]]; then kept_arguments+=("$argument"); fi
 done
 arguments=("${kept_arguments[@]}")
+# A first enrollment needs a name chosen on this machine. Without a terminal, stop before any write.
+# An enrolled machine may keep its profile in an older store. Store migration moves it later.
+# List the two current stores and every store in store_migration.MERGED.
+# A test in tests/test_item_d.py compares this list with that set.
+enrolled=0
+for profile in "$HOME/.fleet/profile.toml" "$HOME/.config/dotfiles/profile.toml" \
+	"$HOME/.local/share/fleet/profile.toml" "$HOME/.local/share/dotfleet/profile.toml" \
+	"$HOME/.config/fleet/profile.toml" "$HOME/.config/dotfleet/profile.toml" \
+	"$HOME/.local/state/fleet/profile.toml" "$HOME/.local/state/dotfleet/profile.toml"; do
+	[[ -e $profile ]] && enrolled=1
+done
+# FLEET_MACHINE_NAME is for tests only. Tests and test containers set it explicitly.
+if [[ $machine_name_given == 0 && -z ${FLEET_MACHINE_NAME:-} && $enrolled == 0 ]] &&
+	[[ ! -s $HOME/.fleet/machine-name ]] &&
+	{ [[ ${FLEET_REMOTE_RUN:-0} == 1 ]] || ! { : </dev/tty; } 2>/dev/null; }; then
+	example=$(hostname 2>/dev/null || uname -n)
+	example=${example%%.*}
+	example=${example%%-*}
+	example=$(printf '%s' "$example" | tr '[:upper:]' '[:lower:]')
+	if [[ $(uname -s) == Darwin ]]; then
+		example+=-macos
+	elif [[ -r /etc/os-release ]]; then
+		example+=-$(sed -n 's/^ID="\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' /etc/os-release)
+	fi
+	summary_expected=0
+	log_error "A first enrollment needs a machine name. Add --machine-name NAME, such as $example."
+	exit 1
+fi
 # Start before preflight. Reuse the installed writer if a bootstrap download fails.
 if [[ -n $script_dir && -r $script_dir/scripts/run_index.py ]]; then
 	index_script="$script_dir/scripts/run_index.py"

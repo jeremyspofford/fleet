@@ -298,6 +298,24 @@ def render(record, future=False):
             home,
         )
     )
+    enrollment = record.get("enrollment")
+    if enrollment:
+        # A first enrollment ends with fleet check, then what ran, what was skipped, and what is left.
+        sections.append(
+            ["7 · Enrollment"]
+            + wrap(enrollment["check"], "  ")
+            + block(
+                [
+                    (label, ", ".join(enrollment[key]) or "none")
+                    for label, key in (
+                        ("Automated", "automated"),
+                        ("Skipped", "skipped"),
+                        ("Manual", "manual"),
+                    )
+                ],
+                home,
+            )
+        )
 
     lines = (
         wrap("Update triggered by: " + ", ".join(record["update_triggers"]) + ".")

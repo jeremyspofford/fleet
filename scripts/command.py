@@ -49,6 +49,7 @@ CONTROLS = {
     ".fleet/outputs.json",
     ".fleet/agents.json",
     ".fleet/last-run.json",
+    ".fleet/install-stages.json",
     COMMAND,
 }
 DESCRIPTIONS = {

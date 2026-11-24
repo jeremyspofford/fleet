@@ -134,6 +134,8 @@ class RunAccount:
         self.scan = {}
         self.debug_details = None
         self.agent_steps = []
+        # A first enrollment ends with a check and a short account of its stages.
+        self.enrollment = None
         self.update_triggers = json.loads(os.environ.get("FLEET_UPDATE_TRIGGERS", "[]"))
         if not isinstance(self.update_triggers, list) or any(
             trigger not in ("manager update", "content update", "drift repair", "profile change")
@@ -244,6 +246,7 @@ class RunAccount:
             "debug_details": self.debug_details,
             "update_triggers": self.update_triggers,
             "agent_steps": self.agent_steps,
+            "enrollment": self.enrollment,
         }
 
     def save(self):

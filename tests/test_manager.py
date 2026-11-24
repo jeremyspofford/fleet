@@ -17,6 +17,7 @@ import time
 import os
 from pathlib import Path
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -76,6 +77,10 @@ class EnrollmentTests(unittest.TestCase):
         self.base = Path(self.temp.name)
         self.home = self.base / "home"
         self.home.mkdir()
+        # A test home starts with its name chosen, like a machine that stopped after naming.
+        # Tests of the first-enrollment name prompt and stop remove this file.
+        (self.home / ".fleet").mkdir()
+        (self.home / ".fleet/machine-name").write_text(socket.gethostname() + "\n")
         runtime = os.environ.get("FLEET_TEST_TUI_ENV")
         if runtime:
             # Cold installation has its own test. Other fixtures reuse its private dependencies.

@@ -125,6 +125,8 @@ class UpdateTests(unittest.TestCase):
 
     def test_status_never_fetches_and_check_stays_a_separate_command(self):
         self.enroll()
+        # A first enrollment ends with a check. Start this test from a machine never checked.
+        (self.home / updates.CACHE).unlink(missing_ok=True)
         advance(self.origin, 3)
         before = self.snapshot()
         git_state = [

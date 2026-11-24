@@ -32,6 +32,42 @@ NAME_FILE = ".fleet/machine-name"
 NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*")
 
 
+# Completed install stages, so a re-run of the same command resumes after them.
+STAGES_FILE = ".fleet/install-stages.json"
+INSTALL_STAGES = ("detect", "software", "enrollment", "verify")
+
+
+def install_stages(home):
+    """Return the recorded install stages. A corrupt record warns once and starts over."""
+    path = home / STAGES_FILE
+    if not path.is_file() or path.is_symlink():
+        return {}
+    try:
+        record = json.loads(path.read_text())
+        if not isinstance(record, dict) or not isinstance(record.get("stages"), dict):
+            raise ValueError("not a stage record")
+        return record["stages"]
+    except (OSError, ValueError) as error:
+        print(f"Warning: Ignoring {path} ({error}); Fleet rebuilds it.", file=sys.stderr)
+        return {}
+
+
+def complete_stage(home, name, facts=None):
+    """Record one completed install stage, with its facts, in a private file."""
+    stages = install_stages(home)
+    stages[name] = dict(
+        facts or {},
+        completed=datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+    )
+    path = home / STAGES_FILE
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text(json.dumps({"schema_version": 1, "stages": stages}, indent=2) + "\n")
+    os.chmod(temporary, 0o600)
+    temporary.replace(path)
+    return stages
+
+
 def saved_name(home=None):
     """Return the name saved in this machine's store, or an empty string."""
     path = (Path.home() if home is None else home) / NAME_FILE
@@ -45,7 +81,9 @@ def saved_name(home=None):
 def machine_name():
     """Return this machine's fleet name: the saved name, else its host name.
 
-    FLEET_MACHINE_NAME overrides both. It lets two homes on one host act as two machines in tests.
+    FLEET_MACHINE_NAME overrides both. It is for tests only.
+    It lets two homes on one host act as two machines.
+    A real machine chooses its name at enrollment.
     """
     return os.environ.get("FLEET_MACHINE_NAME") or saved_name() or socket.gethostname()
 
