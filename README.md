@@ -419,6 +419,31 @@ Files that only the previous repository managed are removed, unless you edited t
 Domain, groups, tools, and agents carry over. If the new repository does not declare your domain, Fleet applies core and says so.
 Your saved domain stays, so switching back applies it again.
 
+## Capture an edit
+
+To capture means to copy an edit of a managed home file back into content.
+Every machine then receives it at its next update.
+This first version takes whole files from plain and Stow content.
+
+1. Edit the home file, such as `~/.zshrc`.
+2. Run `fleet capture ~/.zshrc`. You can name several files.
+3. Review the change to each content file.
+4. Type `capture` and press Enter to commit. Press Enter alone to cancel; nothing changes.
+
+After the commit, Fleet pushes to `origin` only when you can push there.
+Otherwise the commit stays in your checkout, and Fleet says so.
+Fleet then runs the normal update for this machine, so no drift remains.
+
+Capture refuses a file in these cases, and changes nothing for it:
+- **Secret:** an added line looks like a secret. Use a `[secrets]` reference instead.
+- **Group marker:** the edit changes a `# dotfleet:group` line.
+- **Conflict:** newer content changed the same lines.
+- **Not a text file:** a credential file name, a link, binary data, or more than 2 MiB.
+
+Blocks of groups that this machine turns off stay in content.
+For native chezmoi content, run `chezmoi re-add FILE` instead.
+The terminal interface offers Capture under Configuration. It asks for the file in the terminal.
+
 ## Store migration
 
 The installer and installed command move older stores into `~/.fleet` before other work:

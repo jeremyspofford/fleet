@@ -163,6 +163,7 @@ class CommandSurfaceTests(unittest.TestCase):
             "groups": "views/groups.txt",
             "tools": "views/tools.txt",
             "configure": "views/configure review.txt",
+            "capture": "views/capture review.txt",
             "doctor": "views/doctor.txt",
             "version": "views/version.txt",
             "uninstall": "views/uninstall review.txt",

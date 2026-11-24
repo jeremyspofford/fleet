@@ -436,8 +436,8 @@ class FleetApp(App[str]):
         self.push_screen(AreaScreen(event.option.id))
 
     async def open_command(self, action):
-        if action in ("configure", "machine-install"):
-            # Both need the real terminal: the wizard reads it directly, here or over SSH.
+        if action in ("configure", "machine-install", "capture"):
+            # Each needs the real terminal: the wizard and capture read it directly.
             await self.leave(action)
         else:
             self.push_screen(ActionScreen(action))
@@ -592,6 +592,15 @@ def main(argv=None):
         return 0
     app = FleetApp()
     result = app.run()
+    if result == "capture":
+        import capture
+        import command
+
+        name = capture.ask_file()
+        if not name:
+            print("Cancelled. Nothing changed.")
+            return 0
+        return style.run_cli(lambda: command.main(["capture", name]), ROOT)
     if result in ("configure", "machine-install"):
         import command
 

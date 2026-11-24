@@ -110,6 +110,7 @@ EXAMPLES = {
     "tools": "tools list; tools set node --version 26.13.1; tools remove node; tools uninstall node --version 26.3.1; tools update; tools update node; tools adopt; tools adopt jq",
     "backups": "backups create; backups list; backups restore --backup BACKUP; backups delete --name BACKUP; backups delete --keep 2; backups delete --all",
     "secrets": "secrets list",
+    "capture": "capture ~/.zshrc; capture .zshrc .config/git/ignore",
     "content": "content",
     "addons": "addons list",
     "topology": "topology; topology --json",
@@ -126,6 +127,9 @@ EXAMPLES = {
 #        Machines set-ssh: connection test failed; the saved target stays.
 #   130  Interrupted.
 # Diff --stat returns the same codes as diff. A failed remote connection returns nonzero.
+# Capture returns 0 when captured or cancelled, and 1 when any named file is refused,
+# origin changed during the review, or origin did not take the commit.
+# A refused file still lets the others be captured. Otherwise capture returns the update's code.
 def help_epilog(name, display, action=None):
     choices = EXAMPLES.get(name, name).split("; ")
     if action:
@@ -311,6 +315,10 @@ def add_action_parameters(parser, name, action):
 
 
 def add_parameters(parser, name):
+    if name == "capture":
+        parser.add_argument(
+            "file", nargs="+", help="edited managed home file, such as ~/.zshrc or .zshrc"
+        )
     if name == "diff":
         parser.add_argument("--stat", action="store_true", help="show paths only")
     elif name == "topology":

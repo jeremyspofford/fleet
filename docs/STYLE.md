@@ -72,6 +72,7 @@ The command audit uses these forms:
 | status, check, diff, doctor, update | One optional machine subject; diff also has --stat |
 | topology | --json selects structured output |
 | content | No value parameters |
+| capture | One or more FILE paths |
 | tools list | --machine selects a registered machine |
 | machines list, backups list, secrets list, addons list | No value parameters |
 | logs list | --limit |
