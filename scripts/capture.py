@@ -1,6 +1,6 @@
 """Capture edited home files into content, commit them, and push to your own origin.
 
-Internal API: run(home, names, display, update).
+Internal API: run(home, names, display, update, confirm).
 To capture means to copy an edit of a managed home file back into content.
 This first version captures whole files from plain and Stow content, for every machine.
 It pushes only to an origin that you can push to. Otherwise the commit stays local.
@@ -11,8 +11,9 @@ Usage: import this module from Fleet.
 Help: python3 scripts/capture.py --help.
 """
 
-# Exit codes: 0 when captured and updated, or cancelled; 1 when any file is refused or none
-#   is left to capture; otherwise the update's own code.
+# Exit codes: 0 when captured and updated, or cancelled; 1 when any file is refused, none
+#   is left to capture, origin changed during the review, or origin did not take the commit.
+#   Otherwise the update's own code.
 import collections
 import difflib
 import os
@@ -54,9 +55,23 @@ UNREACHABLE = (
 )
 
 
+def ssh_command(checkout):
+    """Return the SSH command git would use in CHECKOUT, with batch mode added.
+
+    Git prefers GIT_SSH_COMMAND, then core.sshCommand, then ssh. Keep that choice.
+    """
+    configured = subprocess.run(
+        ["git", "-C", str(checkout), "config", "--get", "core.sshCommand"],
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    base = os.environ.get("GIT_SSH_COMMAND") or configured or "ssh"
+    return base + " -o BatchMode=yes"
+
+
 def git(checkout, *arguments, check=True):
     """Run git in CHECKOUT. Never wait for a password, a passphrase, or a host key."""
-    ssh = os.environ.get("GIT_SSH_COMMAND", "ssh") + " -o BatchMode=yes"
+    ssh = ssh_command(checkout)
     environment = dict(os.environ, GIT_TERMINAL_PROMPT="0", GIT_SSH_COMMAND=ssh)
     return subprocess.run(
         ["git", "-C", str(checkout), *arguments],
@@ -78,17 +93,22 @@ def merge(ours, base, theirs):
     return result.stdout if result.returncode == 0 else None
 
 
+def lines(data):
+    """Split DATA after each newline only. A bare carriage return stays inside its line."""
+    return re.findall(rb"[^\n]*\n|[^\n]+$", data)
+
+
 def omitted_ranges(content, name, manifest, groups):
     """Return {group: (first line, line after last)} for each block that this machine omits."""
-    lines = content.splitlines()
+    rows = content.split(b"\n")
     ranges = {}
     for group, spec in manifest.get("groups", {}).items():
         if name not in spec.get("blocks", []) or groups.get(group, True):
             continue
         begin = f"# dotfleet:group {group} begin".encode()
         end = f"# dotfleet:group {group} end".encode()
-        if lines.count(begin) == 1 and lines.count(end) == 1:
-            ranges[group] = (lines.index(begin), lines.index(end) + 1)
+        if rows.count(begin) == 1 and rows.count(end) == 1:
+            ranges[group] = (rows.index(begin), rows.index(end) + 1)
     return ranges
 
 
@@ -101,7 +121,7 @@ def restore_blocks(content, rendered, edited, omitted):
     a newline, so a group marker always stays on its own line.
     Return the result, or raise Refused naming a group whose block the edit surrounds.
     """
-    whole, shown, new = (data.splitlines(keepends=True) for data in (content, rendered, edited))
+    whole, shown, new = (lines(data) for data in (content, rendered, edited))
     hidden = {line for first, last in omitted.values() for line in range(first, last)}
     where = [index for index in range(len(whole)) if index not in hidden]
     if [whole[index] for index in where] != shown:
@@ -120,11 +140,10 @@ def restore_blocks(content, rendered, edited, omitted):
             if low < begin and finish <= high:
                 raise Refused(f"changes lines around the disabled group {group}")
         result[low:high] = new[first:last]
-    lines = [
+    return b"".join(
         line if line.endswith(b"\n") or index == len(result) - 1 else line + b"\n"
         for index, line in enumerate(result)
-    ]
-    return b"".join(lines)
+    )
 
 
 def destination(home, name):
@@ -139,7 +158,7 @@ def destination(home, name):
 
 def added_lines(before, after):
     """Yield (line number in AFTER, line) for each line that AFTER adds to BEFORE."""
-    old, new = before.splitlines(), after.splitlines()
+    old, new = before.split(b"\n"), after.split(b"\n")
     for tag, _, _, start, end in difflib.SequenceMatcher(a=old, b=new).get_opcodes():
         if tag in ("insert", "replace"):
             for number in range(start, end):
@@ -181,18 +200,26 @@ def prepare(home, checkout, items, installed, newest, name, manifest, groups):
                 f"{shown} line {number} looks like a secret. Nothing was captured. "
                 "Use a [secrets] reference in fleet.toml and a ~/.secrets variable instead."
             )
-    base = git(checkout, "show", f"{installed}:{content_name}").stdout
+    shown_base = git(checkout, "show", f"{installed}:{content_name}", check=False)
+    if shown_base.returncode != 0:
+        raise Refused(f"{shown} is not in the content this machine applied. Run update first.")
+    base = shown_base.stdout
     # Put the edit back into the full content file, with the blocks this machine omits.
     try:
         omitted = omitted_ranges(base, target, manifest, groups)
         captured = restore_blocks(base, rendered, current, omitted)
     except Refused as error:
         raise Refused(f"{shown} {error}. Nothing changed for it.") from None
-    now = git(checkout, "show", f"{newest}:{content_name}").stdout
+    shown_now = git(checkout, "show", f"{newest}:{content_name}", check=False)
+    if shown_now.returncode != 0:
+        raise Refused(f"{shown} was removed or renamed in newer content. Nothing changed for it.")
+    now = shown_now.stdout
     if now != base:
         captured = merge(now, base, captured)
         if captured is None:
             raise Refused(f"{shown} conflicts with newer content. Nothing changed for it.")
+    if captured == now:
+        raise Refused(f"{shown} already matches content. Run update to apply it.")
     return content_name, now, captured
 
 
@@ -222,50 +249,71 @@ def ask_file():
         return reader.readline().strip()
 
 
-def newest_commit(checkout):
-    """Fetch origin without moving the checkout. Return the commit to capture onto.
+def upstream(checkout):
+    """Return the commit of the checkout's upstream branch, or "" when it has none."""
+    found = git(checkout, "rev-parse", "-q", "--verify", "@{upstream}", check=False)
+    return found.stdout.decode().strip()
 
-    That is origin's branch when the checkout is behind it, else the checkout's HEAD.
+
+def has_origin(checkout):
+    return git(checkout, "remote", "get-url", "origin", check=False).returncode == 0
+
+
+def newest_commit(checkout):
+    """Fetch origin without moving the checkout. Return (commit to capture onto, fetched).
+
+    The commit is origin's branch when the checkout is behind it, else the checkout's HEAD.
     """
     head = git(checkout, "rev-parse", "HEAD").stdout.decode().strip()
-    fetched = git(checkout, "fetch", "-q", "origin", check=False)
-    if fetched.returncode != 0:
+    if not has_origin(checkout):
+        return head, False
+    if git(checkout, "fetch", "-q", "origin", check=False).returncode != 0:
         print("Could not fetch content from origin. Capture uses the checkout as it is.")
-        return head
-    upstream = git(checkout, "rev-parse", "-q", "--verify", "@{upstream}", check=False)
-    newest = upstream.stdout.decode().strip()
+        return head, False
+    newest = upstream(checkout)
     behind = (
         newest
         and git(checkout, "merge-base", "--is-ancestor", "HEAD", newest, check=False).returncode
         == 0
     )
-    return newest if behind else head
+    return (newest if behind else head), True
 
 
-def push(checkout, display):
-    """Push HEAD to origin when you can push there. Say what happened otherwise."""
+def not_own(checkout, display, reason):
+    print(reason)
+    print(f"The commit stays in {checkout}.")
+    print(
+        "Push it to a repository you own. A later Fleet release adds "
+        f"{display} dotfiles own for this."
+    )
+
+
+def push(checkout, display, fetched):
+    """Push HEAD to origin when you can push there. Return what happened.
+
+    Return "pushed", "not own", "unreachable", or "moved". FETCHED tells whether this run's
+    fetch worked: origin answered then, so a refused push means you cannot push there.
+    """
+    if not has_origin(checkout):
+        not_own(checkout, display, "This content has no origin.")
+        return "not own"
     result = git(checkout, "push", "--dry-run", "origin", "HEAD", check=False)
     if result.returncode == 0:
         result = git(checkout, "push", "-q", "origin", "HEAD", check=False)
     if result.returncode == 0:
         print("Pushed to origin.")
-        return True
+        return "pushed"
     reason = result.stderr.decode(errors="replace").lower()
-    if any(text in reason for text in UNREACHABLE):
+    if "fetch first" in reason or "non-fast-forward" in reason:
+        print(f"origin has newer commits. The commit stays in {checkout}.")
+        print(f"Run git -C {checkout} pull --rebase, then git -C {checkout} push origin HEAD.")
+        return "moved"
+    if not fetched and any(text in reason for text in UNREACHABLE):
         print(f"origin could not be reached. The commit stays in {checkout}.")
         print(f"Run git -C {checkout} push origin HEAD when origin answers.")
-        return False
-    elif "fetch first" in reason or "non-fast-forward" in reason:
-        print(f"origin has newer commits. The commit stays in {checkout}.")
-        print(f"Run {display} update, then capture again.")
-    else:
-        print("origin is not a repository you can push to.")
-        print(f"The commit stays in {checkout}.")
-        print(
-            "Push it to a repository you own. A later Fleet release adds "
-            f"{display} dotfiles own for this."
-        )
-    return True
+        return "unreachable"
+    not_own(checkout, display, "origin is not a repository you can push to.")
+    return "not own"
 
 
 def end_with_newline(home, plans, manifest, groups):
@@ -274,14 +322,20 @@ def end_with_newline(home, plans, manifest, groups):
     Content keeps each marker on its own line, so the new rendering can end with a newline
     that the home file lacks. Without it, the update would ask about a one-byte difference.
     """
+    needed = []
     for plan in plans:
-        path = home / plan.target
-        current = path.read_bytes()
+        current = (home / plan.target).read_bytes()
         rendered = convert.filter_blocks(plan.captured, plan.target, manifest, groups)
         if current and not current.endswith(b"\n") and rendered == current + b"\n":
-            with path.open("ab") as stream:
-                stream.write(b"\n")
-            print(f"Added a final newline to ~/{plan.target}, as its group marker needs one.")
+            needed.append(plan.target)
+    if not needed:
+        return
+    saved = manager.backup(home, needed)
+    for target in needed:
+        with (home / target).open("ab") as stream:
+            stream.write(b"\n")
+        print(f"Added a final newline to ~/{target}, as its group marker needs one.")
+    print(f"Backup: {saved}")
 
 
 def review(plans):
@@ -314,8 +368,15 @@ def run(home, names, display, update, confirm):
         raise ValueError(
             f"The content checkout has uncommitted edits: {checkout}. Commit or discard them first."
         )
+    if git(checkout, "symbolic-ref", "-q", "HEAD", check=False).returncode != 0:
+        raise ValueError(
+            f"The content checkout is not on a branch. Run git -C {checkout} switch BRANCH first."
+        )
     installed = installed_commit(home, checkout)
-    newest = newest_commit(checkout)
+    seen = upstream(checkout)
+    newest, fetched = newest_commit(checkout)
+    if fetched:
+        seen = upstream(checkout)
     groups = profile.get("groups", {})
     items = convert.selected_paths(checkout, manifest, groups)
     plans, refused = [], []
@@ -340,6 +401,12 @@ def run(home, names, display, update, confirm):
     if not confirm(ANSWER, explanation):
         print("Cancelled. Nothing changed.")
         return 1 if refused else 0
+    # origin may have moved while the prompt waited. Then capture nothing, so nothing diverges.
+    if has_origin(checkout) and git(checkout, "fetch", "-q", "origin", check=False).returncode == 0:
+        if upstream(checkout) != seen:
+            print("origin changed while you reviewed. Nothing changed.")
+            print(f"Run {display} capture again.")
+            return 1
     # Only now does the checkout move: fast-forward to the content captured onto.
     git(checkout, "merge", "-q", "--ff-only", newest)
     for plan in plans:
@@ -354,11 +421,13 @@ def run(home, names, display, update, confirm):
     git(checkout, "add", "--", *(plan.content_name for plan in plans))
     git(checkout, *identity, "commit", "-q", "-m", f"capture: {shown} from {machine}")
     print(f"Committed: capture: {shown} from {machine}")
-    end_with_newline(home, plans, manifest, groups)
-    if not push(checkout, display):
-        print("Fleet did not run the update, because origin did not answer.")
-        print(f"Run {display} update when origin answers.")
+    pushed = push(checkout, display, fetched)
+    if pushed in ("unreachable", "moved"):
+        print("Fleet did not run the update, because origin did not take the commit.")
+        print(f"Run {display} update after the push succeeds.")
         return 1
+    if pushed == "pushed":
+        end_with_newline(home, plans, manifest, groups)
     if refused:
         # A refused file is still drift. The update would offer to overwrite it and show it.
         print("Fleet did not run the update, because a file was refused.")

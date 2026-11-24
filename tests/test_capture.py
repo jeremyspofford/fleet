@@ -8,8 +8,10 @@ Help: PYTHONPATH=scripts:tests python3 tests/test_capture.py --help.
 import fcntl
 import os
 import pty
+import re
 import select
 import shutil
+import signal
 import subprocess
 import sys
 import termios
@@ -34,7 +36,52 @@ PROMPT = b"Confirm [cancel]:"
 
 class CaptureTests(unittest.TestCase):
     setUp = test_command.CommandTests.setUp
-    terminal = test_command.CommandTests.terminal
+
+    def terminal(self, args, answers, expected=0, before_answer=None):
+        """Run fleet ARGS in a pty and type ANSWERS. Call BEFORE_ANSWER before the first answer.
+
+        EXPECTED None skips the exit check. The run fails after 30 seconds.
+        """
+        master, slave = pty.openpty()
+
+        def setup():
+            os.setsid()
+            fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
+
+        process = subprocess.Popen(
+            [str(self.exe), *args],
+            env=self.env,
+            cwd=self.home,
+            stdin=subprocess.DEVNULL,
+            stdout=slave,
+            stderr=slave,
+            preexec_fn=setup,
+        )
+        data, cursor, sent = b"", 0, 0
+        deadline = time.monotonic() + 30
+        try:
+            while process.poll() is None and time.monotonic() < deadline:
+                if select.select([master], [], [], 0.05)[0]:
+                    data += os.read(master, 65536)
+                plain = re.sub(rb"\x1b\[[0-9;]*m", b"", data[cursor:])
+                if sent < len(answers) and answers[sent][0] in plain:
+                    if before_answer and sent == 0:
+                        before_answer()
+                    os.write(master, answers[sent][1])
+                    sent, cursor = sent + 1, len(data)
+            if process.poll() is None:
+                os.killpg(process.pid, signal.SIGKILL)
+            process.wait()
+            while select.select([master], [], [], 0.05)[0]:
+                data += os.read(master, 65536)
+        finally:
+            os.close(master)
+            os.close(slave)
+        text = re.sub(r"\x1b\[[0-9;]*m", "", data.decode(errors="replace")).replace("\r\n", "\n")
+        if expected is not None:
+            self.assertEqual(process.returncode, expected, text)
+        self.assertEqual(sent, len(answers), text)
+        return text
 
     def content_repository(self):
         """Create plain content with a group block and one Stow package."""
@@ -46,6 +93,7 @@ class CaptureTests(unittest.TestCase):
                 ".zshrc": ZSHRC,
                 ".profile": PROFILE,
                 ".tokenrc": "plain=1\n",
+                ".prompt": "PS1='a\rb'\nx=1\n",
                 "packages/shell/.bashrc": "export SHELL_LINE=1\n",
             },
         )
@@ -217,6 +265,148 @@ class CaptureTests(unittest.TestCase):
         self.assertEqual((self.home / ".file").read_text(), "original\nnot yet\n")
 
 
+class CaptureFollowUpTests(unittest.TestCase):
+    """Review F-078: one test per defect."""
+
+    setUp = CaptureTests.setUp
+    terminal = CaptureTests.terminal
+    content_repository = CaptureTests.content_repository
+    manager_origin = CaptureTests.manager_origin
+    enroll = CaptureTests.enroll
+    home_env = CaptureTests.home_env
+    git = CaptureTests.git
+    published = CaptureTests.published
+    capture = CaptureTests.capture
+
+    def checkout(self):
+        (checkout,) = (self.home / ".fleet/dotfiles").iterdir()
+        return checkout
+
+    def other_clone(self):
+        other = self.base / "other"
+        if not other.exists():
+            command("git", "clone", "-q", str(self.bare), str(other))
+        return other
+
+    def push_from_other(self, change):
+        other = self.other_clone()
+        change(other)
+        identity = ["-c", "user.name=T", "-c", "user.email=t@example.invalid"]
+        self.git(other, "add", "-A")
+        self.git(other, *identity, "commit", "-qm", "elsewhere")
+        self.git(other, "push", "-q", "origin", "HEAD:main")
+
+    def test_a_bare_carriage_return_survives_a_capture(self):
+        self.content_repository()
+        self.enroll(self.bare)
+        (self.home / ".prompt").write_bytes(b"PS1='a\rb'\nx=1\ny=2\n")
+        self.capture(".prompt")
+        # Read bytes: text mode would turn the carriage return into a newline.
+        published = subprocess.run(
+            ["git", "-C", str(self.bare), "cat-file", "-p", "main:.prompt"],
+            capture_output=True,
+            check=True,
+        ).stdout
+        self.assertEqual(published, b"PS1='a\rb'\nx=1\ny=2\n")
+
+    def test_newer_content_that_removes_the_file_refuses_it_by_name(self):
+        self.content_repository()
+        self.enroll(self.bare)
+        self.push_from_other(lambda other: (other / ".file").unlink())
+        (self.home / ".file").write_text("original\nmine\n")
+        output = test_command.CommandTests.cli(self, "capture", ".file", expected=1)
+        self.assertIn("~/.file was removed or renamed in newer content.", output)
+        self.assertNotIn("Traceback", output)
+
+    def test_the_users_ssh_command_is_kept_with_batch_mode(self):
+        self.content_repository()
+        self.enroll(self.bare)
+        record = self.base / "ssh-arguments"
+        fake = self.base / "fake-ssh"
+        fake.mkdir()
+        (fake / "myssh").write_text(f'#!/bin/sh\nprintf "%s\\n" "$@" >>"{record}"\nexit 255\n')
+        (fake / "myssh").chmod(0o755)
+        checkout = self.checkout()
+        self.git(checkout, "remote", "set-url", "origin", "ssh://git@example.invalid/c.git")
+        self.git(checkout, "config", "core.sshCommand", f"{fake}/myssh -o IdentitiesOnly=yes")
+        (self.home / ".file").write_text("original\nkeyed\n")
+        self.capture(".file", expected=1)
+        arguments = record.read_text()
+        self.assertIn("IdentitiesOnly=yes", arguments)
+        self.assertIn("BatchMode=yes", arguments)
+
+    def test_a_refused_push_after_a_good_fetch_means_not_your_origin(self):
+        self.content_repository()
+        self.enroll(self.bare)
+        hook = self.bare / "hooks/pre-receive"
+        hook.write_text("#!/bin/sh\necho 'Permission denied (publickey).' >&2\nexit 1\n")
+        hook.chmod(0o755)
+        (self.home / ".file").write_text("original\nrefused push\n")
+        output = self.capture(".file")
+        self.assertIn("origin is not a repository you can push to.", output)
+        self.assertNotIn("could not be reached", output)
+
+    def test_content_without_a_remote_is_not_yours_to_push(self):
+        self.content_repository()
+        self.enroll(self.bare)
+        self.git(self.checkout(), "remote", "remove", "origin")
+        (self.home / ".file").write_text("original\nno remote\n")
+        output = self.capture(".file", expected=None)
+        self.assertIn("This content has no origin.", output)
+        self.assertNotIn("could not be reached", output)
+
+    def test_origin_moving_during_the_prompt_changes_nothing(self):
+        self.content_repository()
+        self.enroll(self.bare)
+        before = self.git(self.checkout(), "rev-parse", "HEAD").strip()
+        (self.home / ".file").write_text("original\nduring the prompt\n")
+        self.push_from_other(lambda other: (other / ".zshrc").write_text(ZSHRC + "x=1\n"))
+        moved = self.git(self.bare, "rev-parse", "main").strip()
+        original_fetch = self.git(self.checkout(), "config", "remote.origin.fetch").strip()
+        # The capture fetched before this change; the prompt then waits while origin moves.
+        self.git(self.checkout(), "config", "remote.origin.fetch", "+refs/heads/nothing:refs/x")
+        output = self.terminal(
+            ["capture", ".file"],
+            [(PROMPT, b"capture\n")],
+            expected=1,
+            before_answer=lambda: self.git(
+                self.checkout(), "config", "remote.origin.fetch", original_fetch
+            ),
+        )
+        self.assertIn("origin changed while you reviewed. Nothing changed.", output)
+        self.assertEqual(self.git(self.checkout(), "rev-parse", "HEAD").strip(), before)
+        self.assertEqual(self.git(self.bare, "rev-parse", "main").strip(), moved)
+
+    def test_a_second_capture_or_a_detached_checkout_ends_cleanly(self):
+        self.content_repository()
+        self.enroll(self.bare)
+        self.git(self.checkout(), "remote", "set-url", "origin", str(self.base / "gone.git"))
+        (self.home / ".file").write_text("original\ntwice\n")
+        self.capture(".file", expected=1)
+        output = test_command.CommandTests.cli(self, "capture", ".file", expected=1)
+        self.assertIn("~/.file already matches content.", output)
+        self.git(self.checkout(), "checkout", "-q", "--detach")
+        output = test_command.CommandTests.cli(self, "capture", ".file", expected=1)
+        self.assertIn("The content checkout is not on a branch.", output)
+        self.assertNotIn("Traceback", output)
+
+    def test_the_final_newline_is_backed_up_and_only_added_after_a_push(self):
+        self.content_repository()
+        self.enroll(self.bare)
+        test_command.CommandTests.cli(self, "groups", "set", "--name", "extra", "--state", "off")
+        (self.home / ".zshrc").write_text("export BASE=1\nexport ADDED=1")
+        self.capture(".zshrc")
+        saved = [path.read_text() for path in (self.home / ".fleet/backups").glob("*/home/.zshrc")]
+        self.assertIn("export BASE=1\nexport ADDED=1", saved)
+        # With origin unreachable, nothing is pushed, so the home file stays as typed.
+        self.git(self.checkout(), "remote", "set-url", "origin", str(self.base / "gone.git"))
+        (self.home / ".zshrc").write_text("export BASE=1\nexport ADDED=1\nexport MORE=1")
+        self.capture(".zshrc", expected=1)
+        self.assertEqual(
+            (self.home / ".zshrc").read_text(), "export BASE=1\nexport ADDED=1\nexport MORE=1"
+        )
+
+
 class AskFileTests(unittest.TestCase):
     """The terminal interface asks for the file in the terminal (review F-074, Standards)."""
 
@@ -254,10 +444,6 @@ class AskFileTests(unittest.TestCase):
     def test_a_typed_path_is_returned_and_enter_alone_cancels(self):
         self.assertIn("'~/.zshrc'", self.ask(b"~/.zshrc\n"))
         self.assertIn("''", self.ask(b"\n"))
-
-
-if __name__ == "__main__":
-    unittest.main()
 
 
 class CaptureCorrectionTests(unittest.TestCase):
@@ -371,3 +557,7 @@ class CaptureCorrectionTests(unittest.TestCase):
         (self.home / ".tokenrc").write_text("plain=2\n")
         output = test_command.CommandTests.cli(self, "capture", ".tokenrc", expected=1)
         self.assertIn("~/.tokenrc has a credential file name.", output)
+
+
+if __name__ == "__main__":
+    unittest.main()
