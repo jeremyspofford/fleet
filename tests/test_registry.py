@@ -15,6 +15,7 @@ from unittest.mock import patch
 import test_command as commands
 from common import atomic, toml
 import registry
+import run_index
 
 
 class RegistryTests(unittest.TestCase):
@@ -40,8 +41,10 @@ class RegistryTests(unittest.TestCase):
             other = registry.refresh(
                 self.home, "0.2.0", self.home / ".fleet/backups/first", "SUCCESS"
             )
-        # Another machine has its own ID. Without that, this record would be a rename of it.
+        # Another machine has its own ID and its own saved name.
+        # Without them, this record would be a rename of the first one.
         (self.home / registry.MACHINE_ID).unlink()
+        (self.home / run_index.NAME_FILE).unlink()
         with patch("socket.gethostname", return_value="this-machine"):
             first = registry.refresh(
                 self.home, "0.2.1", self.home / ".fleet/backups/second", "SUCCESS"

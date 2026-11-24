@@ -99,7 +99,7 @@ def content_rows(home, profile, checkout_state):
 
 
 def export_rows(home, version, output=None):
-    name = registry.machine_name()
+    name = registry.machine_name(home)
     data = registry.load(home)
     record = data["machines"].get(name) or registry.machine(home, version)
     rows = [("Machine", name + " · this machine")]

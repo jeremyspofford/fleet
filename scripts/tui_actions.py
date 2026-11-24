@@ -231,7 +231,7 @@ def remove_machine_arguments(home):
         [
             (name, name)
             for name in registry.load(home)["machines"]
-            if name != registry.machine_name()
+            if name != registry.machine_name(home)
         ],
     )
     return ["machines", "remove", "--name", selected] if selected is not None else None
@@ -241,7 +241,7 @@ def uninstall_machine_arguments(home):
     members = [
         (name, name)
         for name, record in registry.load(home)["machines"].items()
-        if record["enrolled"] and record.get("ssh_target") and name != registry.machine_name()
+        if record["enrolled"] and record.get("ssh_target") and name != registry.machine_name(home)
     ]
     selected = choose("Remove Fleet from a member", "Machine", members)
     return ["machines", "uninstall", selected] if selected is not None else None

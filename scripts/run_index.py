@@ -78,14 +78,16 @@ def saved_name(home=None):
     return name if NAME.fullmatch(name) else ""
 
 
-def machine_name():
+def machine_name(home=None):
     """Return this machine's fleet name: the saved name, else its host name.
+
+    HOME is the home whose saved name counts; without one, the current user's home.
 
     FLEET_MACHINE_NAME overrides both. It is for tests only.
     It lets two homes on one host act as two machines.
     A real machine chooses its name at enrollment.
     """
-    return os.environ.get("FLEET_MACHINE_NAME") or saved_name() or socket.gethostname()
+    return os.environ.get("FLEET_MACHINE_NAME") or saved_name(home) or socket.gethostname()
 
 
 def folder(home):
@@ -172,7 +174,7 @@ def begin(home, command):
         "id": identifier,
         "time": now.isoformat(timespec="microseconds"),
         "command": command,
-        "machine": machine_name(),
+        "machine": machine_name(home),
         "remote": os.environ.get("FLEET_REMOTE_RUN") == "1",
         "result": "RUNNING",
         "stage": "preflight",
