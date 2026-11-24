@@ -3,7 +3,10 @@
 # Usage: bash scripts/apply.sh [-h|--help]
 # Parameters: -h/--help prints help; other arguments are invalid.
 # Example: bash scripts/apply.sh
-# Exit codes: 0 success/help; 1 apply failure; 2 invalid arguments.
+# Exit codes: 0 success or help; 2 invalid arguments.
+#   Without a terminal: 1 when the apply stops at a conflict or fails.
+#   In a terminal: apply_terminal.py's code: chezmoi's own code, 128 plus a signal number,
+#   or 1 when the helper itself fails.
 # Author: Jeremy Spofford / Aria Labs; Version: read from ../VERSION.
 set -euo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)

@@ -26,6 +26,7 @@ import traceback
 import datetime
 import hashlib
 import json
+import contextlib
 import os
 from pathlib import Path
 import re
@@ -34,6 +35,7 @@ import shutil
 import store_migration
 import subprocess
 import sys
+import termios
 import ui_channel
 import tui_environment
 import tempfile
@@ -1252,10 +1254,59 @@ def kept_by_you_message(paths):
 CONFLICT_TAIL = " has changed since chezmoi last wrote it"
 
 
+def difference_problems(not_reviewed, others, unconfirmed):
+    """Describe what still differs after an attended apply and fails the run, or return ""."""
+    shown = ", ".join
+    problems = []
+    if not_reviewed and unconfirmed:
+        # A "?" record: an answer that Fleet could not read safely. S may have been pressed.
+        problems.append(
+            f"Not confirmed: {shown('~/' + path for path in not_reviewed)}. "
+            "Fleet could not confirm your answer for these files."
+        )
+    elif not_reviewed:
+        # After q, chezmoi never asks about later files. Their local changes are not reviewed.
+        problems.append(
+            f"Not reviewed: {shown('~/' + path for path in not_reviewed)}. "
+            "The apply stopped before chezmoi asked about these local changes."
+        )
+    if others:
+        problems.append(
+            f"Managed files still differ after the apply: {shown('~/' + path for path in others)}. "
+            "The apply stopped before these files."
+        )
+    return " ".join(problems) + " Run update again to review them." if problems else ""
+
+
+@contextlib.contextmanager
+def terminal_kept(path="/dev/tty"):
+    """Restore the terminal's settings after the block, however the block ends."""
+    try:
+        descriptor = os.open(path, os.O_RDWR | os.O_NOCTTY)
+    except OSError:
+        yield
+        return
+    try:
+        saved = termios.tcgetattr(descriptor)
+    except termios.error:
+        os.close(descriptor)
+        yield
+        return
+    try:
+        yield
+    finally:
+        try:
+            termios.tcsetattr(descriptor, termios.TCSADRAIN, saved)
+        except termios.error:
+            pass
+        os.close(descriptor)
+
+
 def sort_differences(status, choices):
     """Split what still differs after an attended apply into kept, not reviewed, and others.
 
-    STATUS is chezmoi status output. CHOICES holds apply.sh's records: a key, a tab, a prompt.
+    STATUS is chezmoi status output. CHOICES holds apply_terminal.py's records: a key, a tab,
+    and chezmoi's question.
     A first status column of M or D is a local change: an edit or a deletion.
     A local change counts as kept when chezmoi asked about it, or once the user pressed S.
     """
@@ -1265,7 +1316,8 @@ def sort_differences(status, choices):
     asked = {prompt.removesuffix(CONFLICT_TAIL) for _, prompt in records}
     kept, not_reviewed, others = [], [], []
     for line in status.splitlines():
-        if len(line) <= 3:
+        # A second-column R is a script that chezmoi runs, not a file that can conflict.
+        if len(line) <= 3 or line[1] == "R":
             continue
         path = line[3:]
         if line[0] not in "MD":
@@ -1346,10 +1398,12 @@ def apply_confirmed_plan(
     agent_deploy.apply(home, plan["agents"], wizard_catalog(), account)
     account.confirm_files(fingerprint)
     choices = backup_path / "conflict-choices.txt"
-    result = subprocess.run(
-        [bash(), str(ROOT / "scripts/apply.sh")],
-        env={**os.environ, "FLEET_APPLY_CHOICES": str(choices)},
-    )
+    # apply_terminal.py sets the terminal raw. Even a killed helper must leave it usable.
+    with terminal_kept():
+        result = subprocess.run(
+            [bash(), str(ROOT / "scripts/apply.sh")],
+            env={**os.environ, "FLEET_APPLY_CHOICES": str(choices)},
+        )
     account.confirm_files(fingerprint)
     if result.returncode:
         raise RuntimeError(
@@ -1368,21 +1422,10 @@ def apply_confirmed_plan(
         kept = set(kept_paths)
         if kept_paths:
             warnings.append(kept_by_you_message(kept_paths))
-        # After q, chezmoi never asks about later files. Their local changes are not reviewed.
-        problems = []
-        if not_reviewed:
-            problems.append(
-                "Not reviewed: " + ", ".join("~/" + path for path in not_reviewed) + ". "
-                "The apply stopped before chezmoi asked about these local changes."
-            )
-        if others:
-            problems.append(
-                "Managed files still differ after the apply: "
-                + ", ".join("~/" + path for path in others)
-                + ". The apply stopped before these files."
-            )
+        unconfirmed = any(line.startswith("?\t") for line in recorded.splitlines())
+        problems = difference_problems(not_reviewed, others, unconfirmed)
         if problems:
-            raise ValueError(" ".join(problems) + " Run update again to review them.")
+            raise ValueError(problems)
     # Record the applied profile. A later saved-only change then triggers an update.
     record = json.loads((home / RECORD).read_text())
     record["profile_sha256"] = hashlib.sha256(

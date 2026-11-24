@@ -17,6 +17,7 @@ import subprocess
 import tempfile
 import termios
 import time
+import tty
 import unittest
 
 import apply_terminal
@@ -199,7 +200,21 @@ class ApplyTerminalTests(unittest.TestCase):
     def test_ctrl_c_stops_chezmoi_and_restores_the_terminal(self):
         self.fake_chezmoi("printf 'waiting\\n'\nsleep 30\n")
         code, output = self.run_apply([(b"waiting", b"\x03", 0)])
-        self.assertNotEqual(code, 0, output)
+        self.assertEqual(code, 130, output)
+
+    def test_an_answer_with_escape_or_control_bytes_is_never_recorded_as_skip_all(self):
+        # Review F-072, Spec 3: chezmoi rejects these lines and asks again; q then quits.
+        # The record must not say Skip-conflicts, or .b would count as kept unasked.
+        for typed in (b"\x1b[AS\r", b"s\x08S\r", b"\x1b[200~S\x1b[201~\r"):
+            with self.subTest(typed=typed):
+                self.setUp()
+                self.real_chezmoi(["a", "b"])
+                steps = [(b"Choose [", typed, 0), (b"Choose [", b"q\r", 0)]
+                code, output = self.run_apply(steps)
+                self.assertEqual(code, 0, output)
+                self.assertNotIn("Skip-conflicts", self.records())
+                kept, not_reviewed, _ = manager.sort_differences(self.status(), self.records())
+                self.assertEqual((kept, not_reviewed), ([".a"], [".b"]))
 
 
 class ResolveTests(unittest.TestCase):
@@ -218,12 +233,57 @@ class ResolveTests(unittest.TestCase):
         for answer in ["", "x", "Secret123"]:
             self.assertIsNone(apply_terminal.resolve(answer, self.CHOICES))
 
+    def test_a_run_script_line_is_not_a_file_conflict(self):
+        # Review F-072: content with an every-run script must not fail every attended update.
+        status = "MM .a\n R run_every.sh\n"
+        kept, not_reviewed, others = manager.sort_differences(status, f"skip\t.a{TAIL}\n")
+        self.assertEqual((kept, not_reviewed, others), ([".a"], [], []))
+
     def test_a_recorded_skip_all_keeps_every_file_and_a_question_mark_does_not(self):
         status = "MM .a\nMM .b\n"
         kept, not_reviewed, _ = manager.sort_differences(status, f"Skip-conflicts\t.a{TAIL}\n")
         self.assertEqual((kept, not_reviewed), ([".a", ".b"], []))
         kept, not_reviewed, _ = manager.sort_differences(status, f"?\t.a{TAIL}\n")
         self.assertEqual((kept, not_reviewed), ([".a"], [".b"]))
+
+
+class TerminalKeptTests(unittest.TestCase):
+    """Review F-072, Spec 1: Fleet restores the terminal even when the helper is killed."""
+
+    def test_the_settings_return_after_the_block_and_after_an_error(self):
+        master, slave = pty.openpty()
+        self.addCleanup(os.close, master)
+        self.addCleanup(os.close, slave)
+        before = termios.tcgetattr(slave)
+        with manager.terminal_kept(os.ttyname(slave)):
+            tty.setraw(slave)
+        self.assertEqual(termios.tcgetattr(slave), before)
+        with self.assertRaises(RuntimeError):
+            with manager.terminal_kept(os.ttyname(slave)):
+                tty.setraw(slave)
+                raise RuntimeError("the helper was killed")
+        self.assertEqual(termios.tcgetattr(slave), before)
+
+    def test_without_a_terminal_the_block_still_runs(self):
+        ran = []
+        with manager.terminal_kept("/nonexistent/tty"):
+            ran.append(True)
+        self.assertEqual(ran, [True])
+
+
+class DifferenceProblemTests(unittest.TestCase):
+    """Review F-072, Spec 5: after an unconfirmed answer, say so instead of blaming the apply."""
+
+    def test_unconfirmed_and_unreached_files_get_their_own_words(self):
+        text = manager.difference_problems([".b"], [], unconfirmed=True)
+        self.assertIn(
+            "Not confirmed: ~/.b. Fleet could not confirm your answer for these files.", text
+        )
+        self.assertNotIn("stopped before", text)
+        text = manager.difference_problems([".b"], [".c"], unconfirmed=False)
+        self.assertIn("Not reviewed: ~/.b.", text)
+        self.assertIn("Managed files still differ after the apply: ~/.c.", text)
+        self.assertEqual(manager.difference_problems([], [], unconfirmed=False), "")
 
 
 if __name__ == "__main__":

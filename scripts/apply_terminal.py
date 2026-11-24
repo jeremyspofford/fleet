@@ -9,7 +9,8 @@ the chosen menu word, a tab, then chezmoi's question. Free text is never recorde
 Author: Jeremy Spofford / Aria Labs; Version: read from ../VERSION.
 """
 
-# Exit codes: chezmoi's own exit code; 128 plus the signal number when a signal stops it.
+# Exit codes: 0 help; 2 invalid arguments; 1 when the helper itself fails.
+#   Otherwise chezmoi's own exit code, or 128 plus the signal number when a signal stops it.
 
 import errno
 import fcntl
@@ -45,6 +46,8 @@ KEYS = {
     "all": ("a", "Apply remaining changes, but still ask about conflicts."),
     "quit": ("q", "Stop applying. Changes already made remain in place."),
 }
+# A terminal's answers to chezmoi's queries for its background color and cursor position.
+TERMINAL_ANSWER = re.compile(rb"\x1b\]11;[^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[\d+;\d+R")
 # A partial line shows after this many seconds without output: a prompt may wait for input.
 QUIET = 0.2
 
@@ -77,7 +80,7 @@ def explain(question, choices):
 class Relay:
     """Pass bytes between the user's terminal and chezmoi's, and record conflict answers."""
 
-    def __init__(self, terminal, master, slave, choices_file):
+    def __init__(self, terminal, master, slave, choices_file, erase=0x7F):
         self.terminal, self.master, self.slave = terminal, master, slave
         self.choices_file = choices_file
         self.line = b""  # chezmoi output since the last newline, not yet shown
@@ -88,6 +91,10 @@ class Relay:
         self.ahead = False
         # A terminal answers chezmoi's queries with escape sequences. They are not typing.
         self.escape = None
+        # The terminal's erase key edits a line. Any other control byte, or an escape sequence,
+        # makes the line unconfirmed: chezmoi may read it differently from what Fleet sees.
+        self.erase = erase
+        self.unsure = False
 
     def show(self, data):
         os.write(self.terminal, data)
@@ -129,34 +136,50 @@ class Relay:
                 self.ahead = True
             if byte in (0x0D, 0x0A):
                 self.answered()
-                self.typed = b""
-            elif byte in (0x7F, 0x08):
+                self.typed, self.unsure = b"", False
+            elif byte == self.erase:
                 self.typed = self.typed[:-1]
+            elif byte < 0x20 or byte == 0x7F:
+                self.unsure = True
             else:
                 self.typed += bytes([byte])
 
     def in_escape(self, byte):
-        """Return True while BYTE belongs to a terminal escape sequence, such as ESC [ 1 ; 1 R."""
+        """Return True while BYTE belongs to a terminal escape sequence, such as ESC [ 1 ; 1 R.
+
+        A complete sequence is a terminal's answer to chezmoi's query, or a key.
+        A key, such as an arrow or a bracketed paste, makes the line unconfirmed.
+        """
         state = self.escape
         if state is None:
-            if byte == 0x1B:
-                self.escape = "start"
-                return True
-            return False
+            if byte != 0x1B:
+                return False
+            self.escape, self.sequence = "start", b"\x1b"
+            return True
+        self.sequence += bytes([byte])
+        done = False
         if state == "start":
-            self.escape = {0x5B: "csi", 0x5D: "string", 0x50: "string", 0x4F: "one"}.get(byte)
-            if byte in (0x58, 0x5E, 0x5F):
-                self.escape = "string"
+            kinds = {0x5B: "csi", 0x4F: "one", 0x5D: "string", 0x50: "string"}
+            kinds.update({0x58: "string", 0x5E: "string", 0x5F: "string"})
+            self.escape = kinds.get(byte)
+            done = self.escape is None
         elif state == "csi":
-            if 0x40 <= byte <= 0x7E:
-                self.escape = None
+            done = 0x40 <= byte <= 0x7E
         elif state == "string":
             # A string ends with BEL or with ESC backslash.
-            self.escape = None if byte == 0x07 else ("string-end" if byte == 0x1B else "string")
+            done = byte == 0x07
+            self.escape = "string-end" if byte == 0x1B else "string"
         elif state == "string-end":
-            self.escape = None if byte == 0x5C else "string"
+            done = byte == 0x5C
+            self.escape = "string"
         else:
+            done = True
+        if done:
             self.escape = None
+            if not TERMINAL_ANSWER.fullmatch(self.sequence):
+                self.unsure = True
+                if self.menu is None:
+                    self.ahead = True
         return True
 
     def answered(self):
@@ -164,7 +187,7 @@ class Relay:
             return
         question, choices, clean = self.menu
         self.menu, self.ahead = None, False
-        if not clean:
+        if not clean or self.unsure:
             key = "?"
         else:
             key = resolve(self.typed.decode(errors="replace"), choices)
@@ -214,7 +237,9 @@ def run(command, choices_file=None):
     process = subprocess.Popen(
         command, stdin=slave, stdout=slave, stderr=slave, preexec_fn=controlling_terminal
     )
-    relay = Relay(terminal, master, slave, choices_file)
+    erase = saved[6][termios.VERASE]
+    erase = erase[0] if isinstance(erase, bytes) else erase
+    relay = Relay(terminal, master, slave, choices_file, erase)
 
     def restore(*_):
         termios.tcsetattr(terminal, termios.TCSADRAIN, saved)
@@ -262,12 +287,13 @@ def run(command, choices_file=None):
 
 
 def main(argv):
-    if argv[1:] in (["-h"], ["--help"]):
-        print(__doc__.strip())
-        return 0
-    if argv[1:]:
-        print(__doc__.strip(), file=sys.stderr)
-        return 2
+    import argparse
+
+    from style import ArgumentParser
+
+    ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    ).parse_args(argv[1:])
     choices = os.environ.get("FLEET_APPLY_CHOICES") or None
     return run(["chezmoi", "--no-tty", "--no-pager", "apply"], choices and Path(choices))
 
