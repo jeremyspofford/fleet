@@ -262,7 +262,11 @@ def proposed_name(
     WSL: host, distro and version, then scope, such as dell-ubuntu-26.04-alertventure.
     The scope is the WSL distro's own name unless it equals the base distro and version.
     Linux: host and distro, such as dell-fedora. macOS: host-macos. Windows: host-windows.
+    A release number that names another release of this distro is removed first.
+    So LAPTOP-DEBIAN-11 on Debian 12 gives laptop-debian-debian, and WSL Ubuntu-24.04 on 26.04
+    gives dell-ubuntu-26.04.
     A name that another machine ID uses gets -2, then -3, until it is free.
+    A suffix that names another release of this distro is skipped.
     """
     distro = os.environ.get("WSL_DISTRO_NAME", "") if distro is None else distro
     hostname = socket.gethostname() if hostname is None else hostname
@@ -279,17 +283,85 @@ def proposed_name(
             if part
         )
         scope = sanitized(distro)
-        parts = (host, base, "" if scope == base else scope)
+        # An upgraded WSL distro keeps its old name, such as Ubuntu-24.04 on 26.04.
+        # Drop that old release from the scope.
+        current = without_other_releases(scope, release)
+        # A scope that held only the distro and its old release then says nothing more.
+        if current != scope and current == sanitized(facts.get("ID", "")):
+            current = ""
+        parts = (host, base, "" if current == base else current)
     elif system == "Linux":
         parts = (host, sanitized(facts.get("ID", "")))
     else:
         parts = (host, sanitized(system))
     name = "-".join(part for part in parts if part) or sanitized(hostname)
+    # A host name can hold another release too, such as LAPTOP-DEBIAN-11 on Debian 12.
+    name = without_other_releases(name, release)
+    reason = version_conflict(name, release)
+    if reason:
+        raise ValueError("Fleet proposed a machine name that its own rule rejects: " + reason)
     taken = taken_names(home) if home is not None else set()
     candidate, number = name, 2
-    while candidate in taken:
+    # Skip a suffix that reads as another release, such as -10 on Debian 12.
+    # Only a suffix with as many digits as a one-part version can do that.
+    # The loop reaches one only after many taken names, so this limit is never too low.
+    limit = 10 * (len(taken) + 2) + 100
+    while candidate in taken or version_conflict(candidate, release):
+        if number > limit:
+            raise ValueError(
+                f"Fleet found no free machine name after {limit} tries."
+                " Choose one with --machine-name NAME."
+            )
         candidate, number = f"{name}-{number}", number + 1
     return candidate
+
+
+def without_other_releases(name, release=Path("/etc/os-release")):
+    """Remove each release number in NAME that version_conflict() would reject.
+
+    The distro ID stays, so laptop-debian-11 becomes laptop-debian on Debian 12.
+    """
+    facts = release_facts(release)
+    distro, version = sanitized(facts.get("ID", "")), facts.get("VERSION_ID", "")
+    if not distro or not version:
+        return name
+
+    def keep_or_drop(found):
+        number = found.group(3)
+        if reads_as_version(number, version) and not same_release(number, version):
+            return found.group(1) + found.group(2)
+        return found.group(0)
+
+    pattern = rf"(^|-)({re.escape(distro)})-(\d+(?:\.\d+)*)(?=-|$)"
+    # Removing one release can expose the next, as in debian-11-10. Repeat until nothing changes.
+    previous, name = None, name.lower()
+    while name != previous:
+        previous, name = name, re.sub(pattern, keep_or_drop, name)
+    return name
+
+
+def reads_as_version(number, version):
+    """Return True when NUMBER after the distro ID is a release, not a taken-name suffix.
+
+    A suffix such as -2 is one undotted number, so a dotted number is always a release.
+    On a one-part version, a number with as many digits is a release too.
+    So 40 is a release on Fedora 41, and 20230101 is one on Tumbleweed 20240101.
+    A number with another digit count, such as 2, is a suffix.
+    """
+    if "." in number:
+        return True
+    return "." not in version and len(number) == len(version)
+
+
+def same_release(number, version):
+    """Return True when one version is the other, or extends it by more parts.
+
+    So 24.04.1 names Ubuntu 24.04, and 3.20 names Alpine 3.20.3.
+    Each dot-separated part must match exactly, so 3.2 does not name Alpine 3.20.3.
+    """
+    numbers, versions = number.split("."), version.split(".")
+    shared = min(len(numbers), len(versions))
+    return numbers[:shared] == versions[:shared]
 
 
 def version_conflict(name, release=Path("/etc/os-release")):
@@ -298,15 +370,9 @@ def version_conflict(name, release=Path("/etc/os-release")):
     distro, version = sanitized(facts.get("ID", "")), facts.get("VERSION_ID", "")
     if not distro or not version:
         return ""
-    # A taken-name suffix such as -2 is one undotted number. It must not read as a version.
-    # A one-part version, such as Fedora 41, counts only a number with as many digits.
-    # A dotted version, such as Ubuntu 24.04, counts every dotted number.
-    one_part = "." not in version
     for found in re.finditer(rf"(?:^|-){re.escape(distro)}-(\d+(?:\.\d+)*)(?=-|$)", name.lower()):
         number = found.group(1)
-        if (len(number) != len(version)) if one_part else ("." not in number):
-            continue
-        if number != version:
+        if reads_as_version(number, version) and not same_release(number, version):
             return (
                 f"{name} names {distro} {number}, but this machine runs"
                 f" {distro} {version}. Choose another name."
