@@ -183,6 +183,8 @@ class MiseConfigTests(unittest.TestCase):
         # The handover ran: Fleet's pins left the global config before the stop.
         self.assertIn("Mise: Fleet's pins moved to ~/.config/mise/conf.d/fleet.toml.", output)
         self.assertFalse((self.home / USER).exists())
+        # The fake stopped the unattended apply, and apply.sh says so.
+        self.assertIn("Apply stopped. Review changes in a terminal, then re-run setup.", output)
         listed = self.mise("ls", "--current")
         self.assertEqual(listed.returncode, 0, listed.stdout + listed.stderr)
         for tool in rendered["tools"]:

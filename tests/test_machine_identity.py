@@ -12,6 +12,7 @@ import unittest
 from unittest.mock import patch
 
 import registry
+import run_index
 import remote
 import test_deploy
 from common import atomic
@@ -91,7 +92,8 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(registry.resolve(dell, "old-name"), "new-name")
         self.assertEqual(registry.resolve(dell, "me@lab"), "new-name")
 
-    def test_a_machine_whose_saved_name_changes_renames_its_own_record(self):
+    def test_before_its_profile_a_new_saved_name_renames_its_own_record(self):
+        # A first enrollment that stopped before its profile may choose its name again.
         home = self.home("box")
         with patch("socket.gethostname", return_value="before"):
             registry.refresh(home, "0.10.1", home / ".fleet/backups/one", "SUCCESS")
@@ -99,13 +101,23 @@ class IdentityTests(unittest.TestCase):
         with patch("socket.gethostname", return_value="after"):
             registry.refresh(home, "0.10.1", home / ".fleet/backups/two", "SUCCESS")
         self.assertEqual(sorted(registry.load(home)["machines"]), ["before"])
-        # A new saved name, as a rename at the prompt makes, renames the record.
+        # Without a profile yet, a new saved name is a new choice, and it renames the record.
         registry.save_name(home, "after")
         latest = registry.refresh(home, "0.10.1", home / ".fleet/backups/three", "SUCCESS")
         machines = registry.load(home)["machines"]
         self.assertEqual(sorted(machines), ["after"])
         self.assertEqual(latest["aliases"], ["before"])
         self.assertEqual(latest["machine_id"], registry.machine_id(home))
+        # Once enrolled, with a profile, Fleet never renames the machine.
+        (home / ".fleet/profile.toml").write_text('domain = "core"\n')
+        with self.assertRaisesRegex(ValueError, "already named after. Fleet never renames it"):
+            registry.save_name(home, "third")
+
+    def test_the_machine_name_always_needs_the_home_it_belongs_to(self):
+        # Review F-070: a default home let a caller read the current user's saved name.
+        for function in (run_index.machine_name, run_index.saved_name, registry.machine_name):
+            with self.subTest(function=function.__qualname__), self.assertRaises(TypeError):
+                function()
 
     def test_two_ids_with_one_name_both_list_with_the_collision_shown(self):
         dell = self.home("dell")

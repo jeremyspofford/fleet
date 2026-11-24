@@ -286,7 +286,7 @@ class CorrectionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "already named .*Fleet never renames it"):
             registry.save_name(self.home, "new")
         self.assertFalse((self.home / run_index.NAME_FILE).exists())
-        self.assertEqual(run_index.machine_name(), socket.gethostname())
+        self.assertEqual(run_index.machine_name(self.home), socket.gethostname())
         # The current name is accepted and saved.
         registry.save_name(self.home, socket.gethostname())
         self.assertEqual(run_index.saved_name(self.home), socket.gethostname())

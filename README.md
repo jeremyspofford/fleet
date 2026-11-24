@@ -432,6 +432,7 @@ This first version takes whole files from plain and Stow content.
 
 After the commit, Fleet pushes to `origin` only when you can push there.
 Otherwise the commit stays in your checkout, and Fleet says so.
+`fleet status` then names each content commit that is not pushed, with the next step.
 Fleet then runs the normal update for this machine, so no drift remains.
 
 Capture refuses a file in these cases, and changes nothing for it:
