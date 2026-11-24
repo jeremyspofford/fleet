@@ -95,16 +95,19 @@ def load(home):
         for name in ("home", "last_backup", "last_run_record"):
             if record[name] and not Path(record[name]).is_absolute():
                 raise ValueError(f"Fleet record {key}: {name} must be an absolute path.")
-        if key == machine_name() and record["home"] == str(home):
+        if key == machine_name(home) and record["home"] == str(home):
             for name in ("last_backup", "last_run_record"):
                 if record[name]:
                     record[name] = str(relocated(record[name], home))
     return data
 
 
-def machine_name():
-    """Return this machine's fleet name. The run index owns the rule; it runs before the manager."""
-    return run_index.machine_name()
+def machine_name(home=None):
+    """Return this machine's fleet name. The run index owns the rule; it runs before the manager.
+
+    Pass the home you work on, so its saved name counts, not the current user's.
+    """
+    return run_index.machine_name(home)
 
 
 def machine_id(home, create=False):
@@ -180,7 +183,7 @@ def machine(home, manager_version, fallback=None):
         else ""
     )
     return {
-        "hostname": machine_name(),
+        "hostname": machine_name(home),
         "home": str(home),
         "os": os_name(),
         "domain": profile.get("domain", ""),
@@ -207,7 +210,7 @@ def save_name(home, name):
     saved = run_index.saved_name(home)
     if (home / ".fleet/profile.toml").exists():
         # An enrollment from before saved names is named by the name it reports now.
-        current = saved or run_index.machine_name()
+        current = saved or run_index.machine_name(home)
         if name != current:
             raise ValueError(f"This machine is already named {current}. Fleet never renames it.")
     # A first enrollment that stopped before its profile may choose again.
@@ -397,7 +400,7 @@ def backfill(home):
     if not (home / ".fleet/profile.toml").exists():
         return
     if not run_index.saved_name(home) and not os.environ.get("FLEET_MACHINE_NAME"):
-        save_name(home, machine_name())
+        save_name(home, machine_name(home))
     path = home / REGISTRY
     if not path.exists():
         return
@@ -409,7 +412,7 @@ def backfill(home):
     with os.fdopen(descriptor, "a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         data = load(home)
-        record = data["machines"].get(machine_name())
+        record = data["machines"].get(machine_name(home))
         changed = {
             key: item
             for key, item in facts.items()
@@ -448,7 +451,7 @@ def refresh(home, manager_version, backup, result, fallback=None, *, run_record=
         raise ValueError("Fleet registry parent leaves HOME. Keep the manager store inside HOME.")
     if not run_index.saved_name(home) and not os.environ.get("FLEET_MACHINE_NAME"):
         # The first recorded run saves the name, so a later host name change renames nothing.
-        save_name(home, machine_name())
+        save_name(home, machine_name(home))
     current = machine(home, manager_version, fallback)
     current.update(
         last_run=datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
@@ -690,7 +693,7 @@ def merge(data, received, own, own_id="", contacted=None, answered=None):
 def merge_into(home, received, contacted=None, answered=None):
     """Merge a digest into this machine's registry under the shared lock. No backup is taken."""
     path = home / REGISTRY
-    own, own_id = machine_name(), machine_id(home)
+    own, own_id = machine_name(home), machine_id(home)
     # A contact that brings nothing new writes nothing, not even the lock file.
     if not any(merge(load(home), received, own, own_id, contacted, answered).values()):
         return {"added": [], "updated": [], "dropped": []}
@@ -714,7 +717,7 @@ def sync_own_version(home, manager_version):
     path = home / REGISTRY
     if not path.is_file():
         return False
-    own = machine_name()
+    own = machine_name(home)
     record = load(home)["machines"].get(own)
     if record is None or record.get("manager_version") == manager_version:
         return False
@@ -773,7 +776,7 @@ def duplicate_notes(members):
 def entities(home, manager_version):
     """List known facts as one compact block per machine, plus a one-line row for larger fleets."""
     data = load(home)
-    local = machine_name()
+    local = machine_name(home)
     if local not in data["machines"]:
         data["machines"][local] = machine(home, manager_version)
     output = []

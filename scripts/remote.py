@@ -445,7 +445,7 @@ def receive_deploy(home, request):
     import command
     import registry
 
-    own = registry.machine_name()
+    own = registry.machine_name(home)
     # Every contact rechecks the version this machine reports about itself.
     registry.sync_own_version(home, installed_version())
     if request["action"] == "exchange":

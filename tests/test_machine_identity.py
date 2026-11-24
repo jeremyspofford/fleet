@@ -6,7 +6,6 @@ Help: PYTHONPATH=scripts:tests python3 tests/test_machine_identity.py --help.
 """
 
 import json
-import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -43,10 +42,6 @@ class IdentityTests(unittest.TestCase):
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
         self.base = Path(folder.name)
-        # The saved machine name is read from HOME. Never read the real one (report F-053).
-        home = patch.dict(os.environ, {"HOME": str(self.base)})
-        home.start()
-        self.addCleanup(home.stop)
 
     def home(self, name):
         path = self.base / name
@@ -96,12 +91,17 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(registry.resolve(dell, "old-name"), "new-name")
         self.assertEqual(registry.resolve(dell, "me@lab"), "new-name")
 
-    def test_a_machine_whose_hostname_changes_renames_its_own_record(self):
+    def test_a_machine_whose_saved_name_changes_renames_its_own_record(self):
         home = self.home("box")
         with patch("socket.gethostname", return_value="before"):
             registry.refresh(home, "0.10.1", home / ".fleet/backups/one", "SUCCESS")
+        # The first run saved the name, so a host name change alone renames nothing.
         with patch("socket.gethostname", return_value="after"):
-            latest = registry.refresh(home, "0.10.1", home / ".fleet/backups/two", "SUCCESS")
+            registry.refresh(home, "0.10.1", home / ".fleet/backups/two", "SUCCESS")
+        self.assertEqual(sorted(registry.load(home)["machines"]), ["before"])
+        # A new saved name, as a rename at the prompt makes, renames the record.
+        registry.save_name(home, "after")
+        latest = registry.refresh(home, "0.10.1", home / ".fleet/backups/three", "SUCCESS")
         machines = registry.load(home)["machines"]
         self.assertEqual(sorted(machines), ["after"])
         self.assertEqual(latest["aliases"], ["before"])

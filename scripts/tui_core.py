@@ -37,7 +37,7 @@ def dashboard(home):
         except ValueError:
             pass
     return [
-        ("Machine", registry.machine_name()),
+        ("Machine", registry.machine_name(home)),
         ("Domain", rows["Domain"]),
         ("Content", profile["content_repo"]),
         ("Commit", commit(dotfiles_library.active(home)) or "not recorded"),

@@ -1066,7 +1066,7 @@ def update_all(home, args, argument_parser):
 
     Print one result line as each machine finishes, then a summary. Exit with the worst code.
     """
-    this = registry.machine_name()
+    this = registry.machine_name(home)
     members = sorted(
         name
         for name, record in registry.load(home)["machines"].items()
@@ -1680,7 +1680,7 @@ def update_marketplaces(home, args, display, saved, workspace):
 
 
 def remove_machine(home, hostname):
-    if hostname == registry.machine_name():
+    if hostname == registry.machine_name(home):
         raise ValueError(
             "This machine is active. Only another machine’s stale record can be removed."
         )
@@ -1693,7 +1693,7 @@ def remove_machine(home, hostname):
             raise ValueError("No saved machine named " + hostname + ". Nothing was removed.")
         own_id = registry.machine_id(home)
         if (
-            key == registry.machine_name()
+            key == registry.machine_name(home)
             or own_id
             and (data["machines"][key].get("machine_id") == own_id)
         ):
@@ -1748,7 +1748,7 @@ def uninstall_machine(home, name):
     data = loaded["machines"]
     name = registry.resolve(loaded, name) or name
     record = data.get(name)
-    if name == registry.machine_name():
+    if name == registry.machine_name(home):
         raise ValueError(
             f"Run {current_command(home)} uninstall to remove Fleet from this machine."
         )
@@ -1797,11 +1797,11 @@ def install_machine(home, args):
     # NAME is a target. The registry may know it as a member's name or saved SSH target.
     member = registry.resolve(registry.load(home), args.name)
     record = data.get(member, {}) if member else {}
-    if record.get("enrolled") and member != registry.machine_name():
+    if record.get("enrolled") and member != registry.machine_name(home):
         raise ValueError(
             f"{args.name} is already a fleet member. Run {current_command(home)} update {member}."
         )
-    if args.name == registry.machine_name():
+    if args.name == registry.machine_name(home):
         raise ValueError("This machine is already enrolled. Choose another machine.")
     supplied = args.ssh_target is not None
     args.ssh_target = args.ssh_target or record.get("ssh_target") or args.name
@@ -1858,7 +1858,7 @@ def wsl_install(home, args):
         )
     if not distro or distro not in available:
         raise ValueError(f"No WSL distro named {distro or wanted or name}. Run wsl.exe --list.")
-    if recorded.get("enrolled") and member != registry.machine_name():
+    if recorded.get("enrolled") and member != registry.machine_name(home):
         raise ValueError(
             f"{name} is already a fleet member. Run {current_command(home)} update {member}."
         )

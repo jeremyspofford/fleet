@@ -6,7 +6,6 @@ Help: PYTHONPATH=scripts:tests python3 tests/test_registry.py --help.
 
 import copy
 import json
-import os
 from pathlib import Path
 import socket
 import tempfile
@@ -24,10 +23,6 @@ class RegistryTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.home = Path(self.temp.name)
-        # The saved machine name is read from HOME. Never read the real one (report F-053).
-        home = patch.dict(os.environ, {"HOME": str(self.home)})
-        home.start()
-        self.addCleanup(home.stop)
         atomic(
             self.home / ".fleet/profile.toml",
             toml(
