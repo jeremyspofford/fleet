@@ -10,6 +10,7 @@ commands:
     addons        List optional manager extensions.
     agents        Show or switch agent items on this machine.
     backups       Create, list, restore, or delete saved copies.
+    capture       Copy edited home files into content, commit them, and push.
     check         Fetch new update results.
     configure     Reopen the enrollment wizard.
     content       Show the content checkout and Git state.
