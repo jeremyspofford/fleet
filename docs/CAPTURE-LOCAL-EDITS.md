@@ -1,6 +1,6 @@
 # Capture local edits
 
-Status: proposal. The owner ruled on its first four questions on 2026-11-24. Section 9 records them and lists four new questions. Nothing here is built.
+Status: proposal, fully ruled. The owner ruled on all eight questions on 2026-11-24. Section 9 records each ruling. Nothing here is built.
 
 The owner asked how a person edits a dotfile on one machine, spreads the change to every machine, and keeps it managed.
 An update must then neither raise a conflict nor overwrite the edit.
@@ -45,7 +45,7 @@ This document proposes a capture command, a way to take over content as one's ow
 7. Fleet commits only the captured files in the checkout. The message is `capture: FILE from MACHINE`.
 8. Fleet checks whether `origin` is the user's own repository, with `git push --dry-run origin HEAD`.
    It sets `GIT_TERMINAL_PROMPT=0`, so the check never waits for a password.
-   - Own: Fleet pushes to `origin` (ruling 2).
+   - Own: Fleet pushes to `origin` without a question (rulings 2 and 8).
    - Not own, or no remote: Fleet keeps the commit local and offers section 3's flow. It never pushes to another person's repository.
 9. Fleet then runs the normal update for this machine. The home file now equals its rendered file, so no drift remains.
 
@@ -65,14 +65,14 @@ It turns the active checkout into the user's own repository and keeps its histor
 
 1. Fleet checks `origin` as in section 2, step 8. When it is already own, Fleet says so and stops.
 2. Fleet asks where the own repository lives. The keys are:
-   - `g`: create it with `gh repo create NAME`, when `gh` is installed and signed in. Section 9, question 5, sets its visibility.
+   - `g`: create it with `gh repo create NAME`, when `gh` is installed and signed in. Fleet asks for its visibility each time, with private preselected (ruling 5).
    - `u`: type the address of an empty repository that the user created.
    - `c`: cancel. Nothing changes.
 3. Fleet renames the old `origin` to `upstream`. Adopted content has no old remote, so it gets no `upstream`.
 4. Fleet adds the own repository as `origin` and pushes every branch and tag. The history stays whole.
 5. Fleet records the new address as this machine's content source in its profile, and in the registry record.
 6. Fleet offers to switch the other members now (section 6).
-7. `fleet dotfiles merge-base` later fetches `upstream` and merges its new commits into the checkout.
+7. `fleet dotfiles merge-base` later fetches `upstream` and merges its new commits into the checkout. Updates never merge them (ruling 7).
    It shows the review and asks for `merge` and Enter. Then it commits and pushes to `origin`.
    A merge conflict stops it, names each file, and changes nothing.
 
@@ -112,8 +112,8 @@ This is ruling 4:
 2. A machine without its own edits to that file takes the new rendered file. No prompt appears.
 3. A machine with its own uncaptured edits to that file follows section 5, step 2. A clean merge keeps both; a conflict asks or skips.
 4. A machine that has turned a group off still omits that group's block, as today.
-5. After `fleet dotfiles own`, the other members still pull from the old address. Section 9, question 6, decides how they switch.
-   The proposal: Fleet sends a new remote profile action, `dotfiles source --repo URL`, to each connected member.
+5. After `fleet dotfiles own`, the other members still pull from the old address. Fleet switches every reachable member (ruling 6).
+   Fleet sends a new remote profile action, `dotfiles source --repo URL`, to each connected member.
    Each target saves it, and its next update re-points its checkout's `origin` and keeps `upstream`. The history matches, so the move is a fast-forward.
    Fleet prints the same command for each member that it cannot reach.
 6. A target with unpushed local commits, or with uncommitted edits to managed files, keeps its old source. It reports why, as today's update gate does.
@@ -125,7 +125,7 @@ This is ruling 4:
    It suggests a `[secrets]` reference in `fleet.toml` and a `~/.secrets` variable instead.
 3. Capture refuses whole files that adoption excludes: credential file names, binary files, and files above 2 MiB.
 4. The check cannot prove that no secret remains. The review says so before the push, as adoption does today.
-5. `fleet dotfiles own` pushes the existing history, which earlier secret checks did not see. Its review says so, and a private repository is the default (question 5).
+5. `fleet dotfiles own` pushes the existing history, which earlier secret checks did not see. Its review says so, and private is preselected (ruling 5).
 
 ## 8. Build order
 
@@ -148,7 +148,7 @@ Later PRs, in order:
 
 ## 9. Questions for the owner, with rulings
 
-The owner ruled on questions 1-4 on 2026-11-24. Each entry keeps its recommendation as the record of the advice given.
+The owner ruled on all eight questions on 2026-11-24. Each entry keeps its recommendation as the record of the advice given.
 
 1. What is the command called? Options: `fleet capture`, `fleet save`, or `fleet keep`. Recommendation: `fleet capture`.
    RULED: `fleet capture`.
@@ -161,12 +161,16 @@ The owner ruled on questions 1-4 on 2026-11-24. Each entry keeps its recommendat
 5. What visibility does `fleet dotfiles own` give a repository that it creates with `gh`?
    Options: (a) private, (b) public, (c) ask each time with private preselected.
    Recommendation: (c). Old history may hold values that no secret check saw, and a person can still choose public.
+   RULED: (c). Fleet asks each time, with private preselected.
 6. How do the other members switch to the new repository? Options:
    (a) Fleet sends `dotfiles source` to each connected member at once, and prints the command for the rest.
    (b) The user runs `fleet dotfiles use` on each machine.
    (c) Members learn it from the registry exchange and switch at their next update.
    Recommendation: (a). It reaches every member that Fleet can reach, and nothing switches without a person's command.
+   RULED: (a). Fleet switches every reachable member.
 7. How do base changes from `upstream` arrive? Options: (a) only through `fleet dotfiles merge-base`, with a review; (b) every update merges them.
    Recommendation: (a). A base change can conflict with the user's own edits, and that needs a person.
+   RULED: (a). Base changes arrive only through `fleet dotfiles merge-base`.
 8. Does capture push without a question once `origin` is own? Options: (a) yes; (b) ask each time, with yes preselected.
    Recommendation: (a). Ruling 2 says yes, and the review before the commit already asks for `capture`.
+   RULED: (a). Capture pushes without asking once `origin` is own.
