@@ -10,6 +10,7 @@ import io
 import json
 import os
 import re
+import signal
 from pathlib import Path
 import subprocess
 import tempfile
@@ -304,6 +305,53 @@ class VersionRuleTests(unittest.TestCase):
                                 name = registry.proposed_name(scope, release, host, where, system)
                                 with self.subTest(release=release.name, host=host, scope=scope):
                                     self.assertEqual(registry.version_conflict(name, release), "")
+
+    def test_chained_releases_are_all_removed_and_the_proposal_ends(self):
+        # Review F-056: removing one release can expose the next one.
+        cases = [
+            ("debian", "12", "", "LAPTOP-DEBIAN-11-10", "Linux"),
+            ("debian", "12", "Debian", "LAPTOP-DEBIAN-11-10", "WSL"),
+            ("debian", "12", "Debian-11-10-13", "DELL", "WSL"),
+            ("fedora", "41", "", "DESKTOP-FEDORA-40-39", "Linux"),
+            ("ubuntu", "24.04", "Ubuntu-22.04-23.10", "DELL", "WSL"),
+            (
+                "opensuse-tumbleweed",
+                "20240101",
+                "openSUSE-Tumbleweed-20230101-20231201",
+                "DELL",
+                "WSL",
+            ),
+        ]
+
+        def hang(signum, frame):
+            raise TimeoutError("proposed_name() did not finish within 5 seconds")
+
+        previous = signal.signal(signal.SIGALRM, hang)
+        self.addCleanup(signal.signal, signal.SIGALRM, previous)
+        with tempfile.TemporaryDirectory() as folder:
+            for distro, version, scope, host, system in cases:
+                release = self.release(folder, distro, version)
+                with self.subTest(host=host, scope=scope, system=system):
+                    signal.alarm(5)
+                    try:
+                        name = registry.proposed_name(scope, release, host, None, system)
+                    finally:
+                        signal.alarm(0)
+                    self.assertEqual(registry.version_conflict(name, release), "")
+
+    def test_the_suffix_loop_stops_with_a_clear_error_at_its_limit(self):
+        # A defect that rejects every suffix must stop the proposal, not hang it.
+        def every_suffix_conflicts(name, release):
+            return "" if name == "dell-debian" else f"{name} names another release."
+
+        with tempfile.TemporaryDirectory() as folder:
+            debian = self.release(folder, "debian", "12")
+            with (
+                patch.object(registry, "version_conflict", every_suffix_conflicts),
+                patch.object(registry, "taken_names", return_value={"dell-debian"}),
+            ):
+                with self.assertRaisesRegex(ValueError, "no free machine name after 130 tries"):
+                    registry.proposed_name("", debian, "DELL", Path(folder), "Linux")
 
 
 class ResumeTests(unittest.TestCase):

@@ -262,6 +262,9 @@ def proposed_name(
     WSL: host, distro and version, then scope, such as dell-ubuntu-26.04-alertventure.
     The scope is the WSL distro's own name unless it equals the base distro and version.
     Linux: host and distro, such as dell-fedora. macOS: host-macos. Windows: host-windows.
+    A release number that names another release of this distro is removed first.
+    So LAPTOP-DEBIAN-11 on Debian 12 gives laptop-debian-debian, and WSL Ubuntu-24.04 on 26.04
+    gives dell-ubuntu-26.04.
     A name that another machine ID uses gets -2, then -3, until it is free.
     A suffix that names another release of this distro is skipped.
     """
@@ -294,11 +297,21 @@ def proposed_name(
     name = "-".join(part for part in parts if part) or sanitized(hostname)
     # A host name can hold another release too, such as LAPTOP-DEBIAN-11 on Debian 12.
     name = without_other_releases(name, release)
+    reason = version_conflict(name, release)
+    if reason:
+        raise ValueError("Fleet proposed a machine name that its own rule rejects: " + reason)
     taken = taken_names(home) if home is not None else set()
     candidate, number = name, 2
     # Skip a suffix that reads as another release, such as -10 on Debian 12.
-    # The name itself now passes the version rule, so this loop always ends.
+    # Only a suffix with as many digits as a one-part version can do that.
+    # The loop reaches one only after many taken names, so this limit is never too low.
+    limit = 10 * (len(taken) + 2) + 100
     while candidate in taken or version_conflict(candidate, release):
+        if number > limit:
+            raise ValueError(
+                f"Fleet found no free machine name after {limit} tries."
+                " Choose one with --machine-name NAME."
+            )
         candidate, number = f"{name}-{number}", number + 1
     return candidate
 
@@ -320,14 +333,19 @@ def without_other_releases(name, release=Path("/etc/os-release")):
         return found.group(0)
 
     pattern = rf"(^|-)({re.escape(distro)})-(\d+(?:\.\d+)*)(?=-|$)"
-    return re.sub(pattern, keep_or_drop, name.lower())
+    # Removing one release can expose the next, as in debian-11-10. Repeat until nothing changes.
+    previous, name = None, name.lower()
+    while name != previous:
+        previous, name = name, re.sub(pattern, keep_or_drop, name)
+    return name
 
 
 def reads_as_version(number, version):
     """Return True when NUMBER after the distro ID is a release, not a taken-name suffix.
 
     A suffix such as -2 is one undotted number, so a dotted number is always a release.
-    On a one-part version, such as Fedora 41, a two-digit number such as 40 is a release too.
+    On a one-part version, a number with as many digits is a release too.
+    So 40 is a release on Fedora 41, and 20230101 is one on Tumbleweed 20240101.
     A number with another digit count, such as 2, is a suffix.
     """
     if "." in number:
