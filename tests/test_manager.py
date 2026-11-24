@@ -899,10 +899,12 @@ class EnrollmentTests(unittest.TestCase):
             path.write_bytes(path.read_bytes() + b"\n# local edit\n")
         edited = [path.read_bytes() for path in paths]
         prompt = b"Choose [d/o/a/s/S/q]:"
+        # Kept local edits complete the run with a warning (report F-052).
         for answer in [b"S\n", b"q\n"]:
-            self.terminal([(prompt, answer)], expected=1)
+            output = self.terminal([(prompt, answer)])
+            self.assertIn("Kept by you: ~/.aliases, ~/.bashrc.", output)
             self.assertEqual([path.read_bytes() for path in paths], edited)
-        self.terminal([(prompt, b"s\n"), (prompt, b"o\n")], expected=1)
+        self.terminal([(prompt, b"s\n"), (prompt, b"o\n")])
         self.assertEqual(paths[0].read_bytes(), edited[0])
         self.assertEqual(paths[1].read_bytes(), original[1])
         output = self.terminal([(prompt, b"x\n"), (prompt, b"d\n"), (prompt, b"o\n")])

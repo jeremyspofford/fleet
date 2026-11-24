@@ -1218,9 +1218,14 @@ def wizard_catalog():
     return wizard.agent_manifest()
 
 
+def status_paths(status):
+    """Return the home-relative paths that a chezmoi status lists."""
+    return [line[3:] for line in status.splitlines() if len(line) > 3]
+
+
 def kept_files_message(status):
     """Name each differing file and the command that takes Fleet's version."""
-    paths = [line[3:] for line in status.splitlines() if len(line) > 3]
+    paths = status_paths(status)
     shown = ", ".join("~/" + path for path in paths)
     commands = " ".join("~/" + shlex.quote(path) for path in paths)
     return (
@@ -1229,6 +1234,29 @@ def kept_files_message(status):
         f"To take Fleet's version, run: chezmoi apply --force {commands}. "
         "This run's backup holds your edited copy."
     )
+
+
+def kept_by_you_message(status):
+    """Name each file the user kept at the conflict prompt, and how to take Fleet's version."""
+    paths = status_paths(status)
+    shown = ", ".join("~/" + path for path in paths)
+    commands = " ".join("~/" + shlex.quote(path) for path in paths)
+    return (
+        f"Kept by you: {shown}. Your local edit stays, as you chose at the conflict prompt. "
+        f"To take Fleet's version, run: chezmoi apply --force {commands}. "
+        "This run's backup holds your edited copy."
+    )
+
+
+def attended():
+    """Return True when apply.sh asks conflict questions in a terminal, as it decides itself."""
+    if os.environ.get("FLEET_REMOTE_RUN", "0") == "1":
+        return False
+    try:
+        with open("/dev/tty", "rb+", buffering=0):
+            return True
+    except OSError:
+        return False
 
 
 def apply_confirmed_plan(
@@ -1305,8 +1333,25 @@ def apply_confirmed_plan(
     account.confirm_files(fingerprint)
     run_index.stage("verify")
     status = run("chezmoi", "status")
+    kept = set()
     if status.strip():
-        raise ValueError(kept_files_message(status))
+        # An unattended apply stops at any conflict, so a difference there is an error.
+        if not attended():
+            raise ValueError(kept_files_message(status))
+        # In a terminal, a file with a local edit that still differs is one the user kept.
+        # chezmoi marks such a local edit with M in the first status column.
+        edited = "".join(line + "\n" for line in status.splitlines() if line.startswith("M"))
+        others = "".join(line + "\n" for line in status.splitlines() if not line.startswith("M"))
+        if edited:
+            kept = set(status_paths(edited))
+            warnings.append(kept_by_you_message(edited))
+        # A file the apply never reached, after q, still fails the run as before.
+        if others.strip():
+            shown = ", ".join("~/" + path for path in status_paths(others))
+            raise ValueError(
+                f"Managed files still differ after the apply: {shown}. "
+                "The apply stopped before these files. Run update again to apply them."
+            )
     # Record the applied profile. A later saved-only change then triggers an update.
     record = json.loads((home / RECORD).read_text())
     record["profile_sha256"] = hashlib.sha256(
@@ -1314,13 +1359,19 @@ def apply_confirmed_plan(
     ).hexdigest()
     atomic(home / RECORD, json.dumps(record) + "\n")
     names = plan["names"] | set(plan["generated"])
-    atomic(
-        home / ".fleet/outputs.json",
-        json.dumps({name: fingerprint(home / name) for name in sorted(names)}, indent=2) + "\n",
-    )
+    # A kept file keeps the fingerprint Fleet last wrote. A later removal then sees the edit.
+    outputs = home / ".fleet/outputs.json"
+    previous = json.loads(outputs.read_text()) if outputs.is_file() else {}
+    inventory = {
+        name: previous[name] if name in kept else fingerprint(home / name)
+        for name in sorted(names)
+        if name not in kept or name in previous
+    }
+    atomic(outputs, json.dumps(inventory, indent=2) + "\n")
     if getattr(account, "first_enrollment", False):
         account.enrollment = verify_enrollment(home, profile)
-    return account.finish("SUCCESS", warnings, "CLEAN (no differences)")
+    after = f"{len(kept)} kept by you" if kept else "CLEAN (no differences)"
+    return account.finish("SUCCESS", warnings, after)
 
 
 def parse_arguments(argv):
