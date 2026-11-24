@@ -77,6 +77,8 @@ class KeptConflictTests(unittest.TestCase):
         path.unlink()
         output = self.terminal(["update"], [(b"Type one letter, then press Enter.", b"s\n")])
         self.assertIn("Kept by you: ~/.file.", output)
+        runs = sorted((self.home / ".fleet/runs").glob("*.json"))
+        self.assertEqual(json.loads(runs[-1].read_text())["result"], "SUCCESS")
         flowing = " ".join(output.split())
         self.assertIn("Doctor shows this drift until the next update or that command.", flowing)
         self.assertFalse(path.exists())
@@ -104,6 +106,8 @@ class KeptConflictTests(unittest.TestCase):
         output = self.terminal(["update"], [(b"Type one letter, then press Enter.", b"S\n")])
         self.assertIn("Kept by you: ~/.file, ~/.zshrc.", output)
         self.assertNotIn("Not reviewed", output)
+        runs = sorted((self.home / ".fleet/runs").glob("*.json"))
+        self.assertEqual(json.loads(runs[-1].read_text())["result"], "SUCCESS")
         self.assertEqual((self.home / ".file").read_text(), "my local edit\n")
         self.assertEqual((self.home / ".zshrc").read_text(), "my zshrc edit\n")
 
@@ -127,6 +131,32 @@ class KeptConflictTests(unittest.TestCase):
         self.assertEqual(path.read_text(), "my local edit\n")
         runs = sorted((self.home / ".fleet/runs").glob("*.json"))
         self.assertEqual(json.loads(runs[-1].read_text())["result"], "FAILED")
+
+
+class SortDifferencesTests(unittest.TestCase):
+    """Read apply.sh's records of conflict keys. Review F-063, items 2, 3, and 5."""
+
+    TAIL = " has changed since chezmoi last wrote it"
+
+    def sort(self, status, records):
+        import manager
+
+        choices = "".join(f"{key}\t{path}{self.TAIL}\n" for key, path in records)
+        return manager.sort_differences(status, choices)
+
+    def test_a_path_matches_only_as_a_whole(self):
+        status = "MM .config/zsh/.zshrc\nMM .zshrc\n"
+        kept, not_reviewed, others = self.sort(status, [("q", ".config/zsh/.zshrc")])
+        self.assertEqual((kept, not_reviewed, others), ([".config/zsh/.zshrc"], [".zshrc"], []))
+
+    def test_a_file_name_with_has_in_it_still_matches(self):
+        kept, not_reviewed, _ = self.sort("MM notes has x\n", [("s", "notes has x")])
+        self.assertEqual((kept, not_reviewed), (["notes has x"], []))
+
+    def test_skip_all_with_spaces_around_it_still_keeps_every_file(self):
+        status = "MM .file\nMM .zshrc\n"
+        kept, not_reviewed, _ = self.sort(status, [(" S ", ".file")])
+        self.assertEqual((kept, not_reviewed), ([".file", ".zshrc"], []))
 
 
 if __name__ == "__main__":

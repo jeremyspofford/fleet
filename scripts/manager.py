@@ -1248,6 +1248,10 @@ def kept_by_you_message(paths):
     )
 
 
+# chezmoi's conflict question: the relative path, then this tail.
+CONFLICT_TAIL = " has changed since chezmoi last wrote it"
+
+
 def sort_differences(status, choices):
     """Split what still differs after an attended apply into kept, not reviewed, and others.
 
@@ -1256,8 +1260,9 @@ def sort_differences(status, choices):
     A local change counts as kept when chezmoi asked about it, or once the user pressed S.
     """
     records = [line.split("\t", 1) for line in choices.splitlines() if "\t" in line]
-    skip_all = any(key == "S" for key, _ in records)
-    prompts = [prompt.split(" has ")[0] for _, prompt in records]
+    skip_all = any(key.strip() in ("S", "Skip-conflicts") for key, _ in records)
+    # chezmoi names the file, then adds this fixed tail. Strip only the tail.
+    asked = {prompt.removesuffix(CONFLICT_TAIL) for _, prompt in records}
     kept, not_reviewed, others = [], [], []
     for line in status.splitlines():
         if len(line) <= 3:
@@ -1265,7 +1270,7 @@ def sort_differences(status, choices):
         path = line[3:]
         if line[0] not in "MD":
             others.append(path)
-        elif skip_all or any(prompt == path or prompt.endswith("/" + path) for prompt in prompts):
+        elif skip_all or path in asked:
             kept.append(path)
         else:
             not_reviewed.append(path)

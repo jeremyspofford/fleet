@@ -27,23 +27,45 @@ if [[ $# -gt 0 ]]; then
 	esac
 fi
 # Change only the displayed menu. chezmoi still detects conflicts and handles choices.
-# Its --no-tty mode reads full lines from our terminal descriptor, never piped stdin.
-# Read one answer from the terminal and pass it to chezmoi.
-# Record the prompt and the key, so Fleet can tell kept files from files never asked about.
-answer() {
-	local reply
-	IFS= read -r reply <&3 || reply=''
-	printf '%s\n' "$reply" >&4
-	if [[ -n ${FLEET_APPLY_CHOICES:-} ]]; then
-		printf '%s\t%s\n' "${reply:0:1}" "$1" >>"$FLEET_APPLY_CHOICES"
-	fi
+# Its --no-tty mode reads full lines from a pipe that relay() fills from the terminal.
+
+# Pass every terminal line to chezmoi, so any prompt, even a content script's, gets its answer.
+# Record a line only when it answers a conflict menu, and only as a menu word.
+# Fleet then tells kept files from files never asked about. Free text is never recorded.
+relay() {
+	local reply key
+	while IFS= read -r reply; do
+		# Record before passing the line on: chezmoi may exit, and the relay stop, right after.
+		if [[ -f $MENU ]]; then
+			key=${reply#"${reply%%[![:space:]]*}"}
+			key=${key%"${key##*[![:space:]]}"}
+			if [[ -n ${FLEET_APPLY_CHOICES:-} && $key =~ ^[A-Za-z-]+$ ]]; then
+				printf '%s\t%s\n' "$key" "$(<"$MENU")" >>"$FLEET_APPLY_CHOICES"
+			fi
+			rm -f "$MENU"
+		fi
+		printf '%s\n' "$reply"
+	done
+}
+
+# Read the next character of chezmoi's output into char. Return 1 at the end of the output.
+# When chezmoi is quiet for a second, show the partial line: a prompt may wait for an answer.
+next_char() {
+	local status
+	while true; do
+		if IFS= read -r -n 1 -t 1 char; then return 0; fi
+		status=$?
+		if ((status <= 128)); then return 1; fi
+		if [[ -n $line ]]; then
+			printf '%s' "$line"
+			line=''
+		fi
+	done
 }
 
 show_apply_output() {
 	local char line='' choices suffix message
-	# chezmoi reads its answers from this pipe; answer() writes them.
-	exec 4>"$ANSWERS"
-	while IFS= read -r -n 1 char; do
+	while next_char; do
 		if [[ -z $char ]]; then
 			log_info "$line"
 			line=''
@@ -62,6 +84,8 @@ show_apply_output() {
 			suffix=" ($choices)? "
 			if [[ $line != *"$suffix" ]]; then continue; fi
 			message=${line%"$suffix"}
+			# relay() records the next line as this menu's answer, however early it is typed.
+			printf '%s' "$message" >"$MENU"
 			log_info ''
 			log_info 'File conflict'
 			log_info '-------------'
@@ -94,7 +118,6 @@ show_apply_output() {
 			choices=${choices//all/a}
 			log_info ''
 			log_info "Choose [$choices]:"
-			answer "$message"
 			line=''
 			break
 		done
@@ -102,7 +125,6 @@ show_apply_output() {
 		if [[ $line == *'? ' ]]; then
 			log_info "$line"
 			log_info 'Type your answer, then press Enter.'
-			answer "$line"
 			line=''
 		fi
 	done
@@ -112,12 +134,22 @@ show_apply_output() {
 log_info "Applying managed files"
 if [[ ${FLEET_REMOTE_RUN:-0} != 1 ]] && { exec 3<>/dev/tty; } 2>/dev/null; then
 	# A plain line prompt also lets users correct input before pressing Enter.
-	# Answers pass through a pipe, so each choice is recorded before chezmoi reads it.
+	# Answers pass through a pipe, so each conflict key is recorded before chezmoi reads it.
 	ANSWERS_DIR=$(mktemp -d)
 	ANSWERS=$ANSWERS_DIR/answers
+	MENU=$ANSWERS_DIR/menu
+	RELAY=''
+	# Remove the pipe folder and stop the relay on every exit, Ctrl-C included.
+	stop_relay() {
+		if [[ -n $RELAY ]]; then kill "$RELAY" 2>/dev/null || true; fi
+		rm -rf "$ANSWERS_DIR"
+	}
+	trap stop_relay EXIT
+	trap 'stop_relay; exit 130' INT TERM
 	mkfifo -m 600 "$ANSWERS"
+	relay <&3 >"$ANSWERS" &
+	RELAY=$!
 	chezmoi --no-tty --no-pager apply <"$ANSWERS" | show_apply_output
-	rm -rf "$ANSWERS_DIR"
 	exec 3>&-
 else
 	# Unattended runs must never guess how to resolve a local edit.
