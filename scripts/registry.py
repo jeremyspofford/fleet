@@ -298,15 +298,17 @@ def version_conflict(name, release=Path("/etc/os-release")):
     distro, version = sanitized(facts.get("ID", "")), facts.get("VERSION_ID", "")
     if not distro or not version:
         return ""
-    # A version has the shape of this machine's: the same parts with the same digit counts.
-    # So a taken-name suffix such as -2 never reads as a version.
-    shape = [len(part) for part in version.split(".")]
+    # A taken-name suffix such as -2 is one undotted number. It must not read as a version.
+    # A one-part version, such as Fedora 41, counts only a number with as many digits.
+    # A dotted version, such as Ubuntu 24.04, counts every dotted number.
+    one_part = "." not in version
     for found in re.finditer(rf"(?:^|-){re.escape(distro)}-(\d+(?:\.\d+)*)(?=-|$)", name.lower()):
-        if [len(part) for part in found.group(1).split(".")] != shape:
+        number = found.group(1)
+        if (len(number) != len(version)) if one_part else ("." not in number):
             continue
-        if found.group(1) != version:
+        if number != version:
             return (
-                f"{name} names {distro} {found.group(1)}, but this machine runs"
+                f"{name} names {distro} {number}, but this machine runs"
                 f" {distro} {version}. Choose another name."
             )
     return ""

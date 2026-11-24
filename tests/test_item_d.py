@@ -9,6 +9,7 @@ import contextlib
 import io
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import tempfile
@@ -150,11 +151,15 @@ class FirstNameTests(unittest.TestCase):
         self.assertTrue((self.home / ".fleet/profile.toml").is_file())
 
     def test_the_installer_knows_every_old_store_that_migration_merges(self):
+        # The early name stop must find a profile in every store that migration moves later.
         import store_migration
 
         text = (ROOT / "install.sh").read_text()
-        for old in store_migration.MERGED:
-            self.assertIn(f"$HOME/{old}/profile.toml", text)
+        loop = re.search(r"^for profile in (.*?); do$", text, re.M | re.S)
+        self.assertIsNotNone(loop, "install.sh has no `for profile in ...; do` list")
+        listed = set(re.findall(r'"\$HOME/([^"]+)/profile\.toml"', loop.group(1)))
+        expected = set(store_migration.MERGED) | {".fleet", ".config/dotfiles"}
+        self.assertEqual(listed, expected)
 
     def test_macos_and_windows_propose_their_system_and_ask_once(self):
         for system, suffix in (("Darwin", "macos"), ("Windows", "windows")):
@@ -198,6 +203,28 @@ class VersionRuleTests(unittest.TestCase):
             fedora = self.release(folder, "fedora", "41")
             self.assertEqual(registry.version_conflict("dell-fedora-2", fedora), "")
             self.assertIn("fedora 40", registry.version_conflict("dell-fedora-40", fedora))
+
+    def test_a_real_other_release_with_more_parts_is_rejected(self):
+        # Review F-042: each name below names a real other release of this machine's distro.
+        cases = [
+            ("rocky", "9.4", "dell-rocky-8.10"),
+            ("rocky", "9.4", "dell-rocky-9.10"),
+            ("ubuntu", "24.04", "dell-ubuntu-9.04"),
+            ("ubuntu", "24.04", "dell-ubuntu-22.04.5"),
+            ("alpine", "3.20.3", "dell-alpine-3.19"),
+        ]
+        with tempfile.TemporaryDirectory() as folder:
+            for distro, version, name in cases:
+                with self.subTest(name=name):
+                    release = self.release(folder, distro, version)
+                    self.assertIn("but this machine runs", registry.version_conflict(name, release))
+
+    def test_a_one_part_version_reads_a_shorter_number_as_a_suffix(self):
+        # On Debian 12, -9 can be a taken-name suffix, so the rule accepts dell-debian-9.
+        with tempfile.TemporaryDirectory() as folder:
+            debian = self.release(folder, "debian", "12")
+            self.assertEqual(registry.version_conflict("dell-debian-9", debian), "")
+            self.assertIn("debian 11", registry.version_conflict("dell-debian-11", debian))
 
 
 class ResumeTests(unittest.TestCase):

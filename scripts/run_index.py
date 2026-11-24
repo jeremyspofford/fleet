@@ -81,8 +81,9 @@ def saved_name(home=None):
 def machine_name():
     """Return this machine's fleet name: the saved name, else its host name.
 
-    FLEET_MACHINE_NAME overrides both. It is for tests only: two homes on one host act as two
-    machines. A real machine chooses its name at enrollment.
+    FLEET_MACHINE_NAME overrides both. It is for tests only.
+    It lets two homes on one host act as two machines.
+    A real machine chooses its name at enrollment.
     """
     return os.environ.get("FLEET_MACHINE_NAME") or saved_name() or socket.gethostname()
 
