@@ -280,28 +280,55 @@ def proposed_name(
             if part
         )
         scope = sanitized(distro)
-        parts = (host, base, "" if scope == base else scope)
+        # An upgraded WSL distro keeps its old name, such as Ubuntu-24.04 on 26.04.
+        # Drop that old release from the scope.
+        current = without_other_releases(scope, release)
+        # A scope that held only the distro and its old release then says nothing more.
+        if current != scope and current == sanitized(facts.get("ID", "")):
+            current = ""
+        parts = (host, base, "" if current == base else current)
     elif system == "Linux":
         parts = (host, sanitized(facts.get("ID", "")))
     else:
         parts = (host, sanitized(system))
     name = "-".join(part for part in parts if part) or sanitized(hostname)
+    # A host name can hold another release too, such as LAPTOP-DEBIAN-11 on Debian 12.
+    name = without_other_releases(name, release)
     taken = taken_names(home) if home is not None else set()
     candidate, number = name, 2
     # Skip a suffix that reads as another release, such as -10 on Debian 12.
-    # No suffix can fix a name that conflicts already. Then only taken names count.
-    # The prompt explains that conflict to the user.
-    check = not version_conflict(name, release)
-    while candidate in taken or (check and version_conflict(candidate, release)):
+    # The name itself now passes the version rule, so this loop always ends.
+    while candidate in taken or version_conflict(candidate, release):
         candidate, number = f"{name}-{number}", number + 1
     return candidate
+
+
+def without_other_releases(name, release=Path("/etc/os-release")):
+    """Remove each release number in NAME that version_conflict() would reject.
+
+    The distro ID stays, so laptop-debian-11 becomes laptop-debian on Debian 12.
+    """
+    facts = release_facts(release)
+    distro, version = sanitized(facts.get("ID", "")), facts.get("VERSION_ID", "")
+    if not distro or not version:
+        return name
+
+    def keep_or_drop(found):
+        number = found.group(3)
+        if reads_as_version(number, version) and not same_release(number, version):
+            return found.group(1) + found.group(2)
+        return found.group(0)
+
+    pattern = rf"(^|-)({re.escape(distro)})-(\d+(?:\.\d+)*)(?=-|$)"
+    return re.sub(pattern, keep_or_drop, name.lower())
 
 
 def reads_as_version(number, version):
     """Return True when NUMBER after the distro ID is a release, not a taken-name suffix.
 
     A suffix such as -2 is one undotted number, so a dotted number is always a release.
-    For a one-part version, such as Fedora 41, an undotted number of as many digits is one too.
+    On a one-part version, such as Fedora 41, a two-digit number such as 40 is a release too.
+    A number with another digit count, such as 2, is a suffix.
     """
     if "." in number:
         return True
@@ -311,7 +338,8 @@ def reads_as_version(number, version):
 def same_release(number, version):
     """Return True when one version is the other, or extends it by more parts.
 
-    So 24.04.1 names Ubuntu 24.04, and 3.20 names Alpine 3.20.3. Parts compare whole.
+    So 24.04.1 names Ubuntu 24.04, and 3.20 names Alpine 3.20.3.
+    Each dot-separated part must match exactly, so 3.2 does not name Alpine 3.20.3.
     """
     numbers, versions = number.split("."), version.split(".")
     shared = min(len(numbers), len(versions))

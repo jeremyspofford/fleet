@@ -263,14 +263,47 @@ class VersionRuleTests(unittest.TestCase):
             self.assertEqual(name, "dell-debian-12")
             self.assertEqual(registry.version_conflict(name, debian), "")
 
-    def test_a_proposal_whose_own_scope_names_another_release_still_ends(self):
-        # A WSL distro named Ubuntu-22.04, upgraded in place to 24.04. No suffix can fix it,
-        # so the proposal stays as is and the prompt explains the conflict.
+    def test_an_upgraded_wsl_distro_drops_its_old_release_from_the_proposal(self):
+        # Review F-051, Spec 4: an in-place upgrade keeps the WSL distro's old name.
         with tempfile.TemporaryDirectory() as folder:
-            ubuntu = self.release(folder, "ubuntu", "24.04")
-            with patch.object(registry, "taken_names", return_value=set()):
-                name = registry.proposed_name("Ubuntu-22.04", ubuntu, "DELL", Path(folder), "WSL")
-            self.assertEqual(name, "dell-ubuntu-24.04-ubuntu-22.04")
+            ubuntu = self.release(folder, "ubuntu", "26.04")
+            cases = {
+                "Ubuntu-24.04": "dell-ubuntu-26.04",
+                "Work-Ubuntu-24.04": "dell-ubuntu-26.04-work-ubuntu",
+                "Ubuntu-26.04": "dell-ubuntu-26.04",
+                "AlertVenture": "dell-ubuntu-26.04-alertventure",
+            }
+            for distro, expected in cases.items():
+                with self.subTest(distro=distro):
+                    name = registry.proposed_name(distro, ubuntu, "DELL", None, "WSL")
+                    self.assertEqual(name, expected)
+
+    def test_every_proposal_passes_the_version_rule(self):
+        # Fleet must never propose a name that its own prompt then rejects.
+        hosts = ["DELL-XPS", "DESKTOP-UBUNTU-22.04", "laptop-debian-11", "box"]
+        scopes = ["", "Ubuntu-22.04", "Debian-11.5", "Fedora-40-Lab", "Alpine-3.19", "lab"]
+        releases = [("ubuntu", "24.04"), ("debian", "12"), ("fedora", "41"), ("alpine", "3.20.3")]
+        with tempfile.TemporaryDirectory() as folder:
+            home = Path(folder)
+            (home / ".fleet").mkdir()
+            for distro, version in releases:
+                release = self.release(folder, distro, version)
+                for host in hosts:
+                    for scope in scopes:
+                        for system in ("WSL", "Linux"):
+                            base = registry.proposed_name(scope, release, host, None, system)
+                            taken = [base] + [f"{base}-{number}" for number in range(2, 15)]
+                            machines = {
+                                name: dict(registry.blank(name), machine_id=f"{index:032x}")
+                                for index, name in enumerate(taken, 1)
+                            }
+                            (home / registry.REGISTRY).write_text(
+                                registry.serialize({"schema_version": 1, "machines": machines})
+                            )
+                            for where in (None, home):
+                                name = registry.proposed_name(scope, release, host, where, system)
+                                with self.subTest(release=release.name, host=host, scope=scope):
+                                    self.assertEqual(registry.version_conflict(name, release), "")
 
 
 class ResumeTests(unittest.TestCase):
