@@ -28,8 +28,21 @@ if [[ $# -gt 0 ]]; then
 fi
 # Change only the displayed menu. chezmoi still detects conflicts and handles choices.
 # Its --no-tty mode reads full lines from our terminal descriptor, never piped stdin.
+# Read one answer from the terminal and pass it to chezmoi.
+# Record the prompt and the key, so Fleet can tell kept files from files never asked about.
+answer() {
+	local reply
+	IFS= read -r reply <&3 || reply=''
+	printf '%s\n' "$reply" >&4
+	if [[ -n ${FLEET_APPLY_CHOICES:-} ]]; then
+		printf '%s\t%s\n' "${reply:0:1}" "$1" >>"$FLEET_APPLY_CHOICES"
+	fi
+}
+
 show_apply_output() {
 	local char line='' choices suffix message
+	# chezmoi reads its answers from this pipe; answer() writes them.
+	exec 4>"$ANSWERS"
 	while IFS= read -r -n 1 char; do
 		if [[ -z $char ]]; then
 			log_info "$line"
@@ -81,6 +94,7 @@ show_apply_output() {
 			choices=${choices//all/a}
 			log_info ''
 			log_info "Choose [$choices]:"
+			answer "$message"
 			line=''
 			break
 		done
@@ -88,6 +102,7 @@ show_apply_output() {
 		if [[ $line == *'? ' ]]; then
 			log_info "$line"
 			log_info 'Type your answer, then press Enter.'
+			answer "$line"
 			line=''
 		fi
 	done
@@ -97,7 +112,12 @@ show_apply_output() {
 log_info "Applying managed files"
 if [[ ${FLEET_REMOTE_RUN:-0} != 1 ]] && { exec 3<>/dev/tty; } 2>/dev/null; then
 	# A plain line prompt also lets users correct input before pressing Enter.
-	chezmoi --no-tty --no-pager apply <&3 | show_apply_output
+	# Answers pass through a pipe, so each choice is recorded before chezmoi reads it.
+	ANSWERS_DIR=$(mktemp -d)
+	ANSWERS=$ANSWERS_DIR/answers
+	mkfifo -m 600 "$ANSWERS"
+	chezmoi --no-tty --no-pager apply <"$ANSWERS" | show_apply_output
+	rm -rf "$ANSWERS_DIR"
 	exec 3>&-
 else
 	# Unattended runs must never guess how to resolve a local edit.

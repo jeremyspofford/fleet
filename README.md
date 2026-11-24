@@ -199,9 +199,11 @@ A reference such as `op://Vault/Item/field` names a secret in 1Password. Referen
 Old Layer 0 enrollment migrates automatically. Setup reads old chezmoi data, rendered Mise tools, and saved installer data before applying files.
 Migration also saves existing Mise settings in the profile. Existing Fleet profiles remain authoritative. Backups preserve replaced files and prior staged sources.
 Conflict menus explain letter keys and require Enter.
-A local edit that you keep stays, and the run completes with a warning.
+A local change that you keep with `s` or `S` stays, and the run completes with a warning.
 The warning names the command that takes Fleet's version.
-A file that the apply never reached, after `q`, fails the run.
+`doctor` shows that drift until the next update or that command.
+`q` stops applying. The file you were asked about stays as it is.
+A later local change was never reviewed, so the run fails.
 
 1. Edit content files in the active download under `~/.fleet/dotfiles`. Change profile choices through `dotfleet domain`, `tools`, `groups`, or `configure`.
 2. Commit and push content changes before updating. Setup refuses uncommitted edits to managed files.

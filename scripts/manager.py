@@ -1236,27 +1236,40 @@ def kept_files_message(status):
     )
 
 
-def kept_by_you_message(status):
+def kept_by_you_message(paths):
     """Name each file the user kept at the conflict prompt, and how to take Fleet's version."""
-    paths = status_paths(status)
     shown = ", ".join("~/" + path for path in paths)
     commands = " ".join("~/" + shlex.quote(path) for path in paths)
     return (
-        f"Kept by you: {shown}. Your local edit stays, as you chose at the conflict prompt. "
+        f"Kept by you: {shown}. Your local change stays, as you chose at the conflict prompt. "
         f"To take Fleet's version, run: chezmoi apply --force {commands}. "
-        "This run's backup holds your edited copy."
+        "Doctor shows this drift until the next update or that command. "
+        "This run's backup holds your copy."
     )
 
 
-def attended():
-    """Return True when apply.sh asks conflict questions in a terminal, as it decides itself."""
-    if os.environ.get("FLEET_REMOTE_RUN", "0") == "1":
-        return False
-    try:
-        with open("/dev/tty", "rb+", buffering=0):
-            return True
-    except OSError:
-        return False
+def sort_differences(status, choices):
+    """Split what still differs after an attended apply into kept, not reviewed, and others.
+
+    STATUS is chezmoi status output. CHOICES holds apply.sh's records: a key, a tab, a prompt.
+    A first status column of M or D is a local change: an edit or a deletion.
+    A local change counts as kept when chezmoi asked about it, or once the user pressed S.
+    """
+    records = [line.split("\t", 1) for line in choices.splitlines() if "\t" in line]
+    skip_all = any(key == "S" for key, _ in records)
+    prompts = [prompt.split(" has ")[0] for _, prompt in records]
+    kept, not_reviewed, others = [], [], []
+    for line in status.splitlines():
+        if len(line) <= 3:
+            continue
+        path = line[3:]
+        if line[0] not in "MD":
+            others.append(path)
+        elif skip_all or any(prompt == path or prompt.endswith("/" + path) for prompt in prompts):
+            kept.append(path)
+        else:
+            not_reviewed.append(path)
+    return kept, not_reviewed, others
 
 
 def apply_confirmed_plan(
@@ -1324,7 +1337,11 @@ def apply_confirmed_plan(
     # Agent outputs first: earlier skill links must leave before content installs skill folders.
     agent_deploy.apply(home, plan["agents"], wizard_catalog(), account)
     account.confirm_files(fingerprint)
-    result = subprocess.run([bash(), str(ROOT / "scripts/apply.sh")])
+    choices = backup_path / "conflict-choices.txt"
+    result = subprocess.run(
+        [bash(), str(ROOT / "scripts/apply.sh")],
+        env={**os.environ, "FLEET_APPLY_CHOICES": str(choices)},
+    )
     account.confirm_files(fingerprint)
     if result.returncode:
         raise RuntimeError(
@@ -1336,22 +1353,28 @@ def apply_confirmed_plan(
     kept = set()
     if status.strip():
         # An unattended apply stops at any conflict, so a difference there is an error.
-        if not attended():
+        if not has_terminal():
             raise ValueError(kept_files_message(status))
-        # In a terminal, a file with a local edit that still differs is one the user kept.
-        # chezmoi marks such a local edit with M in the first status column.
-        edited = "".join(line + "\n" for line in status.splitlines() if line.startswith("M"))
-        others = "".join(line + "\n" for line in status.splitlines() if not line.startswith("M"))
-        if edited:
-            kept = set(status_paths(edited))
-            warnings.append(kept_by_you_message(edited))
-        # A file the apply never reached, after q, still fails the run as before.
-        if others.strip():
-            shown = ", ".join("~/" + path for path in status_paths(others))
-            raise ValueError(
-                f"Managed files still differ after the apply: {shown}. "
-                "The apply stopped before these files. Run update again to apply them."
+        recorded = choices.read_text() if choices.is_file() else ""
+        kept_paths, not_reviewed, others = sort_differences(status, recorded)
+        kept = set(kept_paths)
+        if kept_paths:
+            warnings.append(kept_by_you_message(kept_paths))
+        # After q, chezmoi never asks about later files. Their local changes are not reviewed.
+        problems = []
+        if not_reviewed:
+            problems.append(
+                "Not reviewed: " + ", ".join("~/" + path for path in not_reviewed) + ". "
+                "The apply stopped before chezmoi asked about these local changes."
             )
+        if others:
+            problems.append(
+                "Managed files still differ after the apply: "
+                + ", ".join("~/" + path for path in others)
+                + ". The apply stopped before these files."
+            )
+        if problems:
+            raise ValueError(" ".join(problems) + " Run update again to review them.")
     # Record the applied profile. A later saved-only change then triggers an update.
     record = json.loads((home / RECORD).read_text())
     record["profile_sha256"] = hashlib.sha256(

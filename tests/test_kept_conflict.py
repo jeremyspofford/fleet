@@ -70,6 +70,43 @@ class KeptConflictTests(unittest.TestCase):
         self.assertIn("Setup failed", output)
         self.assertEqual((self.home / ".file").read_text(), "my local edit\n")
 
+    def test_a_kept_deletion_counts_as_kept(self):
+        # A local deletion shows DA in chezmoi status; it is a local change as an edit is.
+        self.enroll()
+        path = self.home / ".file"
+        path.unlink()
+        output = self.terminal(["update"], [(b"Type one letter, then press Enter.", b"s\n")])
+        self.assertIn("Kept by you: ~/.file.", output)
+        flowing = " ".join(output.split())
+        self.assertIn("Doctor shows this drift until the next update or that command.", flowing)
+        self.assertFalse(path.exists())
+
+    def edit_two_files(self):
+        """Edit .file and .zshrc locally. chezmoi asks about .file first."""
+        self.enroll()
+        (self.home / ".file").write_text("my local edit\n")
+        (self.home / ".zshrc").write_text("my zshrc edit\n")
+
+    def test_quit_keeps_only_the_file_it_was_asked_about(self):
+        self.edit_two_files()
+        output = self.terminal(
+            ["update"], [(b"Type one letter, then press Enter.", b"q\n")], expected=1
+        )
+        self.assertIn("Kept by you: ~/.file.", output)
+        self.assertIn("Not reviewed: ~/.zshrc.", output)
+        self.assertIn("Setup failed", output)
+        self.assertEqual((self.home / ".zshrc").read_text(), "my zshrc edit\n")
+        runs = sorted((self.home / ".fleet/runs").glob("*.json"))
+        self.assertEqual(json.loads(runs[-1].read_text())["result"], "FAILED")
+
+    def test_skip_all_keeps_every_conflicting_file(self):
+        self.edit_two_files()
+        output = self.terminal(["update"], [(b"Type one letter, then press Enter.", b"S\n")])
+        self.assertIn("Kept by you: ~/.file, ~/.zshrc.", output)
+        self.assertNotIn("Not reviewed", output)
+        self.assertEqual((self.home / ".file").read_text(), "my local edit\n")
+        self.assertEqual((self.home / ".zshrc").read_text(), "my zshrc edit\n")
+
     def test_an_unattended_run_still_stops_before_a_local_edit(self):
         self.enroll()
         path = self.home / ".file"
