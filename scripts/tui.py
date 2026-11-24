@@ -208,7 +208,7 @@ class AreaScreen(Screen):
         if event.option.id == "back":
             await self.app.action_back()
         else:
-            self.app.open_command(event.option.id)
+            await self.app.open_command(event.option.id)
 
 
 class MachineActions(Screen):
@@ -317,7 +317,7 @@ class ActionScreen(Screen):
     async def selected(self, event):
         choice = event.option.id
         if choice == "close":
-            self.app.exit()
+            await self.app.leave()
         elif choice == "back":
             await self.app.action_back()
         elif choice == "backup-delete-selected":
@@ -342,7 +342,7 @@ class ActionScreen(Screen):
         elif choice in ("check", "update") and self.action == "check":
             self.app.perform_action(self, choice)
         else:
-            self.app.open_command(choice)
+            await self.app.open_command(choice)
 
 
 class FleetApp(App[str]):
@@ -435,10 +435,10 @@ class FleetApp(App[str]):
     def open_action(self, event):
         self.push_screen(AreaScreen(event.option.id))
 
-    def open_command(self, action):
+    async def open_command(self, action):
         if action in ("configure", "machine-install"):
             # Both need the real terminal: the wizard reads it directly, here or over SSH.
-            self.exit(action)
+            await self.leave(action)
         else:
             self.push_screen(ActionScreen(action))
 
@@ -511,7 +511,7 @@ class FleetApp(App[str]):
         finally:
             self.busy = self.changing = False
             if self.exit_requested:
-                self.exit()
+                await self.leave()
 
     async def stop_read(self):
         if self.busy and not self.changing and self.operation_worker:
@@ -530,9 +530,14 @@ class FleetApp(App[str]):
             except WorkerCancelled:
                 pass
 
+    async def leave(self, result=None):
+        """Stop the dashboard, then exit with RESULT. Every exit path comes here."""
+        await self.stop_dashboard()
+        self.exit(result)
+
     async def action_back(self):
         if self.uninstalled:
-            self.exit()
+            await self.leave()
             return
         if isinstance(self.screen, (Review, ConnectionPicker, CommandForm)):
             self.screen.action_cancel()
@@ -550,8 +555,7 @@ class FleetApp(App[str]):
             elif len(self.screen_stack) == 1:
                 self.worker = self.load_dashboard()
         else:
-            await self.stop_dashboard()
-            self.exit()
+            await self.leave()
 
     async def action_quit(self):
         if self.busy and self.changing:
@@ -564,8 +568,7 @@ class FleetApp(App[str]):
                 )
         else:
             await self.stop_read()
-            await self.stop_dashboard()
-            self.exit()
+            await self.leave()
 
     def _fatal_error(self):
         # Textual's default includes locals in a traceback. Keep private machine data off screen.

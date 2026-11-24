@@ -170,7 +170,7 @@ class ScreenTests(unittest.IsolatedAsyncioTestCase):
         app = FleetApp(FixtureSession())
         async with app.run_test(size=(80, 24)) as pilot:
             await self.settle(pilot, app)
-            app.open_command("logs")
+            await app.open_command("logs")
             await self.settle(pilot, app)
             options = app.screen.query_one("#actions", OptionList)
             self.assertIn("configure", options.get_option("entry-0").prompt)
@@ -678,6 +678,93 @@ class ScreenTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             await pilot.press("q")
             self.assertTrue(cancelled.is_set())
+
+    def stopping_app(self, order, release=None):
+        """Return an app whose first dashboard stays pending, like a slow core process.
+
+        Its cleanup takes a moment, as a real child process does. ORDER records when the
+        dashboard stopped and when the app exited, so each test can check that order.
+        """
+
+        class SlowDashboard(FixtureSession):
+            calls = 0
+
+            async def run(self, action, output, event, *args, **kwargs):
+                if action == "dashboard" and not SlowDashboard.calls:
+                    SlowDashboard.calls += 1
+                    try:
+                        await asyncio.Event().wait()
+                    finally:
+                        await asyncio.sleep(0.05)
+                        order.append("dashboard stopped")
+                if action == "uninstall":
+                    event({"kind": "uninstalled", "value": True})
+                    return 0
+                if action == "update" and release:
+                    await release.wait()
+                    return 0
+                return await super().run(action, output, event, *args, **kwargs)
+
+        class RecordingApp(FleetApp):
+            # Textual reads CSS_PATH next to the defining module, so name the real file.
+            CSS_PATH = Path(sys.modules[FleetApp.__module__].__file__).with_name(FleetApp.CSS_PATH)
+
+            def exit(self, *args, **kwargs):
+                order.append("exit")
+                super().exit(*args, **kwargs)
+
+        return RecordingApp(SlowDashboard())
+
+    async def choose(self, pilot, app, action):
+        """Open ACTION from the main menu without waiting for the pending dashboard."""
+        area = next(name for name, actions in AREAS.items() if action in actions)
+        menu = app.query_one("#menu", OptionList)
+        menu.highlighted = menu.get_option_index(area)
+        menu.focus()
+        await pilot.press("enter")
+        await pilot.pause()
+        options = app.screen.query_one("#area-actions", OptionList)
+        options.highlighted = options.get_option_index(action)
+        options.focus()
+        await pilot.press("enter")
+        for _ in range(20):
+            await pilot.pause(0.02)
+
+    async def test_leaving_for_a_terminal_command_stops_the_dashboard_first(self):
+        order = []
+        app = self.stopping_app(order)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await self.choose(pilot, app, "configure")
+        self.assertEqual(app.return_value, "configure")
+        self.assertEqual(order[:2], ["dashboard stopped", "exit"])
+
+    async def test_back_after_uninstall_stops_the_dashboard_first(self):
+        order = []
+        app = self.stopping_app(order)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await self.choose(pilot, app, "uninstall")
+            self.assertTrue(app.uninstalled)
+            await pilot.press("escape")
+            for _ in range(20):
+                await pilot.pause(0.02)
+        self.assertEqual(order[:2], ["dashboard stopped", "exit"])
+
+    async def test_a_quit_deferred_until_a_change_ends_stops_the_dashboard_first(self):
+        order = []
+        release = asyncio.Event()
+        app = self.stopping_app(order, release)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await self.choose(pilot, app, "update")
+            self.assertTrue(app.busy and app.changing)
+            await pilot.press("q")
+            self.assertTrue(app.exit_requested)
+            release.set()
+            for _ in range(20):
+                await pilot.pause(0.02)
+        self.assertEqual(order[:2], ["dashboard stopped", "exit"])
 
 
 if __name__ == "__main__":

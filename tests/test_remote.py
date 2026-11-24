@@ -5,6 +5,7 @@ Usage: python3 -m unittest discover -s tests -v. No network connection is used.
 
 import contextlib
 import io
+from datetime import datetime, timedelta
 import json
 import os
 from pathlib import Path
@@ -35,8 +36,14 @@ class RemoteTests(unittest.TestCase):
         self.controller = self.base / "controller"
         self.controller.mkdir()
         atomic(self.controller / ".fleet/profile.toml", toml({"git_name": "Caller only"}))
-        saved = registry.load(self.home)["machines"][socket.gethostname()].copy()
-        saved.update(hostname="beelink", ssh_target="mini-pc")
+        own = registry.load(self.home)["machines"][socket.gethostname()]
+        saved = own.copy()
+        # The copy dates from one second before the target's own record. The target's record
+        # then wins at the first contact, even when its refresh falls in the same second.
+        earlier = datetime.fromisoformat(registry.fact_time(own)) - timedelta(seconds=1)
+        saved.update(hostname="beelink", ssh_target="mini-pc", recorded_at=earlier.isoformat())
+        # The first contact renames the copy only when the copy is older than the target's record.
+        self.assertLess(registry.fact_time(saved), registry.fact_time(own))
         atomic(
             self.controller / registry.REGISTRY,
             registry.serialize({"schema_version": 1, "machines": {"beelink": saved}}),
