@@ -386,7 +386,7 @@ def peer_record(home):
     import command
 
     data = registry.load(home)
-    name = registry.machine_name()
+    name = registry.machine_name(home)
     record = data["machines"].get(name) or registry.machine(
         home, (command.ROOT / "VERSION").read_text().strip()
     )
@@ -405,7 +405,7 @@ def return_target(home, name, options, terminal):
         return ""
     import manager
 
-    caller = registry.machine_name()
+    caller = registry.machine_name(home)
     detail = (
         f"Type the SSH target that {name} uses to reach {caller}, such as user@host.\n"
         f"  skip  Save {caller} on {name} without a connection.\n"
@@ -434,7 +434,7 @@ def register_caller(home, target, name, options, terminal, announce=True):
     facts = facts_of(name, target)
     facts.update(recorded_at=now())
     fact = {key: facts[key] for key in registry.EXCHANGED if key in facts}
-    own = registry.machine_name()
+    own = registry.machine_name(home)
 
     def add(data):
         contacted = registry.resolve(data, name)

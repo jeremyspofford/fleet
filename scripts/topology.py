@@ -78,7 +78,7 @@ def remember(home, name, target, action, state, code):
 
 
 def view(home):
-    name = registry.machine_name()
+    name = registry.machine_name(home)
     records = registry.load(home)["machines"]
     local = records.get(name) or registry.machine(home, "not recorded")
     root = {
