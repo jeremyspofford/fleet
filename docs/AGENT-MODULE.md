@@ -1722,6 +1722,7 @@ Three Codex claims rest on these source files at that tag:
 ## Appendix C: The first draft's conflict rule
 
 Section 11, item 1 names this rule as option A. The main text does not use it.
+The owner ruled option B on 2026-11-20, so this appendix records history only. It does not describe how `main` handles a kept file.
 The first draft called two cases a conflict: an unrecorded value that differs, and a recorded output that a person changed.
 
 Fleet asks about each conflict during apply, after the backup. File conflicts already ask at that point.
@@ -1744,7 +1745,7 @@ Uppercase S differs from lowercase s.
 Choose [d/o/a/s/S/q]:
 ```
 
-A skipped item stays in conflict. The run then ends as incomplete with exit code 1, as a skipped file conflict does today.
+A skipped item stays in conflict. The run then ends as incomplete with exit code 1, as a skipped file conflict did in Fleet 0.5.0.
 The inventory records each unresolved item. Status and doctor report it until a later run resolves it.
 Invalid input repeats the prompt. Tests must drive this prompt through a pseudo-terminal, which simulates a user's terminal.
 Without a terminal, a conflict or a changed output stops the run before the first write.
