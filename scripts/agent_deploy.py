@@ -405,10 +405,10 @@ class Planner:
         """Serve every selected MCP server through one gateway entry for this agent.
 
         The gateway file lists downstream servers. A tree wrapper starts the gateway with it.
-        The entry passes each variable that a downstream server reads; Fleet writes no value.
+        The entry names no variable: the gateway reads ~/.secrets itself, so a new server
+        changes no agent settings file.
         """
         downstream = {}
-        variables = []
         for item in items:
             spec = {
                 key: value
@@ -416,8 +416,6 @@ class Planner:
                 if key not in ("description", "agents", "domains")
             }
             downstream[item.name] = spec
-            variables += spec.get("pass_env", []) + list(spec.get("header_env", {}).values())
-            variables += [spec["bearer_token_env"]] if "bearer_token_env" in spec else []
         config = f"{TREE}/gateway/{agent}.json"
         self.add(config, agent, "gateway", json_bytes({"servers": downstream}))
         wrapper = f"{TREE}/gateway/run-{agent}"
@@ -429,11 +427,7 @@ class Planner:
             f' --config {shlex.quote(str(self.home / config))} "$@"\n'
         )
         self.add(wrapper, agent, "gateway", text.encode(), 0o700)
-        entry = {
-            "transport": "stdio",
-            "command": str(self.home / wrapper),
-            "pass_env": sorted(dict.fromkeys(variables)),
-        }
+        entry = {"transport": "stdio", "command": str(self.home / wrapper), "pass_env": []}
         return agent_table.Item("gateway", GATEWAY, {}), server(agent, entry)
 
     def servers(self, agent):
@@ -542,12 +536,52 @@ class Planner:
         if events:
             hooks = {event: [group for _, group in groups] for event, groups in events.items()}
             self.add(f"{base}/hooks/hooks.json", "claude", "hooks", json_bytes({"hooks": hooks}))
-        if agent_table.skills(self.checkout) or self.pulled_skills:
-            self.add(f"{base}/skills", "claude", "skills", link=str(self.home / SKILLS))
+        # One link per skill keeps each skill's own name, /NAME, as in every other agent.
+        # Claude Code 2.1.259 lists a linked ~/.claude/skills/NAME as NAME (tested 2026-11-22).
+        for name in self.skill_names():
+            self.add(
+                f".claude/skills/{name}",
+                "claude",
+                f"skills.{name}",
+                link=str(self.home / SKILLS / name),
+            )
         self.add(".claude/skills/fleet", "claude", "pointer", link=str(self.home / base))
         rules = self.rules("claude")
         if rules:
             self.add(".claude/rules/fleet.md", "claude", "rules", link=str(self.home / rules))
+
+    def skill_names(self):
+        """Name each skill that reaches this machine: content, pulled-in, and the user's own.
+
+        Content skills pass the domain and exception filter. A folder that the user placed in
+        ~/.agents/skills, outside content, is linked as it is.
+        """
+        declared = {
+            item.name: item
+            for item in self.table.items
+            if item.kind == "skills" and item.origin == "content"
+        }
+        content = agent_table.skills(self.checkout)
+        names = [
+            name
+            for name in content
+            if agent_table.applies(
+                declared.get(name, agent_table.Item("skills", name, {})), self.profile
+            )
+        ]
+        folder = self.home / SKILLS
+        own = (
+            {
+                path.name
+                for path in folder.iterdir()
+                if path.is_dir() and (path / "SKILL.md").is_file()
+            }
+            if folder.is_dir()
+            else set()
+        )
+        # Fleet's plugin link uses the name fleet, so a folder by that name gets no link.
+        own -= set(content) | set(self.pulled_names) | {"fleet"}
+        return sorted(set(names) | set(self.pulled_names) | own)
 
     def gemini(self):
         base = f"{TREE}/gemini"
@@ -699,6 +733,9 @@ class Planner:
                 continue
             if not agent_table.applies(item, self.profile):
                 continue
+            if item.name == "fleet":
+                # Fleet's own Claude Code plugin link uses this name.
+                raise ValueError(f"Marketplace skill {item.name} uses a name reserved for Fleet.")
             folder = item.spec["path"].rstrip("/")
             for name, mode in sorted(agent_table.tracked(item.root).items()):
                 if name.startswith(folder + "/"):
@@ -708,9 +745,11 @@ class Planner:
             target = str(self.home / TREE / "skills" / item.name)
             self.add(f"{SKILLS}/{item.name}", "", item.key, link=target)
             self.pulled_skills = True
+            self.pulled_names.append(item.name)
 
     def build(self, agents):
         self.pulled_skills = False
+        self.pulled_names = []
         if agents:
             self.marketplace_skills()
         for agent in agents:
@@ -867,16 +906,48 @@ TOP_KEY = re.compile(r"^\s*([A-Za-z0-9_-]+)\s*=")
 
 
 def in_strings(lines):
-    """Return the indexes of lines inside a multi-line string, after its opening line."""
-    inside, quote = set(), None
+    """Return the indexes of lines inside a multi-line string, after its opening line.
+
+    Scan TOML strings in order, so quotes inside a one-line string or a comment never count.
+    """
+    inside, open_quote = set(), None
     for index, line in enumerate(lines):
-        if quote:
+        if open_quote:
             inside.add(index)
-            if quote in line:
-                quote = None
-            continue
-        quote = next((mark for mark in ('"""', "'''") if line.count(mark) % 2), None)
+        position = 0
+        while position < len(line):
+            if open_quote:
+                end = line.find(open_quote, position)
+                while open_quote == '"""' and end > 0 and escaped(line, end):
+                    end = line.find(open_quote, end + 1)
+                if end < 0:
+                    break
+                open_quote, position = None, end + 3
+                continue
+            character = line[position]
+            if character == "#":
+                break
+            if line.startswith(('"""', "'''"), position):
+                open_quote, position = line[position : position + 3], position + 3
+                continue
+            if character in "\"'":
+                end = position + 1
+                while end < len(line) and not (
+                    line[end] == character and not (character == '"' and escaped(line, end))
+                ):
+                    end += 1
+                position = end + 1
+                continue
+            position += 1
     return inside
+
+
+def escaped(line, index):
+    """Return True when an odd number of backslashes precede the character at index."""
+    count = 0
+    while index - count - 1 >= 0 and line[index - count - 1] == "\\":
+        count += 1
+    return count % 2 == 1
 
 
 def toml_top_key(text, entry, element):
@@ -992,6 +1063,9 @@ def edited_text(home, relative, fmt, edits):
     if reparsed != expected:
         raise ValueError(f"Editing ~/{relative} would change other values; nothing was written.")
     path = home / relative
+    if path.is_file() and b"\r\n" in path.read_bytes():
+        # A file with CRLF line ends keeps them; Python reads it with plain newlines.
+        result = result.replace("\r\n", "\n").replace("\n", "\r\n")
     mode = path.stat().st_mode & 0o777 if path.exists() else 0o600
     return result, mode
 
@@ -1019,9 +1093,10 @@ def plan(home, checkout, profile, table, catalog, managed=frozenset()):
                 # Refresh replaces an edited copy. The run backup keeps the edited file.
                 result.notes.append(f"Replaced edited ~/{relative}; the backup keeps your copy.")
             continue
-        if current is None or current == output.fingerprint():
+        folder = path.is_dir() and not path.is_symlink()
+        if not folder and (current is None or current == output.fingerprint()):
             continue
-        if saved is None or not matches(path, saved) or path.is_dir() and not path.is_symlink():
+        if saved is None or not matches(path, saved) or folder:
             # The user's own file wins. Fleet stops managing this path and writes nothing.
             del result.outputs[relative]
             held_paths.add(relative)
@@ -1101,6 +1176,11 @@ def plan(home, checkout, profile, table, catalog, managed=frozenset()):
     plugins = {(e.agent, e.item) for e in user_held if e.item.startswith("plugins.")}
     held = {entry.key() for entry in user_held}
     held |= {entry.key() for entry in result.entries if (entry.agent, entry.item) in plugins}
+    # Release every recorded entry of a held plugin, so no later removal deletes the user's.
+    released = {entry.key() for entry in result.released_entries}
+    for old in previous.values():
+        if (old.agent, old.item) in plugins and old.key() not in released:
+            result.released_entries.append(old)
     result.entries = [entry for entry in result.entries if entry.key() not in held]
     for relative in list(files):
         files[relative] = [edit for edit in files[relative] if edit[0].key() not in held]
@@ -1150,6 +1230,11 @@ def installed_by_user(home, catalog, record):
     return False
 
 
+def local_source(source):
+    """A local source starts with /, ~, or ., or names an existing folder."""
+    return source.startswith(("/", "~", ".")) or Path(source).expanduser().is_dir()
+
+
 def plan_plugins(result, inventory, profile, off_agents, home=None, catalog=None):
     """Compare desired plugins with recorded installs. Install, replace, or remove.
 
@@ -1166,6 +1251,12 @@ def plan_plugins(result, inventory, profile, off_agents, home=None, catalog=None
             result.steps.append(
                 f"{record['agent']}: plugin {record['id']} is already installed; it stays yours,"
                 " and Fleet records nothing."
+            )
+            continue
+        if old is None and record["agent"] == "gemini" and local_source(record["id"]):
+            # Gemini CLI asks about folder trust for a local source, so an unattended install fails.
+            result.notes.append(
+                f"gemini: install {record['id']} yourself: gemini extensions install {record['id']}"
             )
             continue
         if old:
@@ -1271,6 +1362,37 @@ def apply_plugins(home, result, catalog, inventory, account=None):
         save_inventory(home, inventory)
         if account:
             account.applied_software.add(plugin_software(Plan(plugin_installs=[record]))[0]["name"])
+
+
+def uninstall_plugins_plan(home, profile):
+    """Return the plugins that fleet uninstall removes: installs that Fleet recorded.
+
+    Listing agents need no command; removing Fleet's listing entry uninstalls them.
+    A plugin with a local exception is released, so it stays.
+    """
+    exceptions = agent_table.exceptions(profile)
+    return [
+        record
+        for record in load_inventory(home).get("plugins", [])
+        if record["agent"] not in LISTED and exceptions.get(record["item"]) != "local"
+    ]
+
+
+def uninstall_plugins(records, catalog, account=None):
+    """Run each agent's own uninstall. A failure prints one line; the uninstall continues."""
+    for record in records:
+        name = plugin_software(Plan(plugin_removals=[record]))[0]["name"]
+        command = shutil.which(catalog[record["agent"]]["command"])
+        if not command:
+            print(f"{name} stays: {catalog[record['agent']]['command']} is not on PATH.")
+            continue
+        try:
+            run_installer(PLUGIN_COMMANDS[record["agent"]]["uninstall"](command, record["id"]))
+        except (OSError, RuntimeError) as error:
+            print(f"{name} stays: {error}")
+            continue
+        if account:
+            account.applied_software.add(name)
 
 
 def drift(home, profile):

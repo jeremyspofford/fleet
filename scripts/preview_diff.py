@@ -6,7 +6,7 @@ Direct execution without help keeps its existing behavior.
 """
 
 from common import atomic, run, toml
-from convert import source_name
+from convert import USER_MISE, source_name
 from installation import COMMAND, launcher
 from store_migration import STATE_RECORDS
 
@@ -28,7 +28,16 @@ def patches(home, profile, plan, folder, root):
         if name in STATE_RECORDS:
             continue  # Inventories describe writes; they are not rendered settings.
         target = extra / source_name(name, "100755" if name == COMMAND else "100644")
-        if name in plan["stale"] or (name in agents and agents[name] is None):
+        handover = plan.get("mise_handover") if name == USER_MISE else None
+        if handover is not None:
+            # The old Mise config keeps only the user's entries, or goes when none remain.
+            # The new preview source no longer manages it, so the extra source renders it.
+            if handover:
+                atomic(target, handover)
+            else:
+                target = target.with_name("remove_" + target.name)
+                atomic(target, "")
+        elif name in plan["stale"] or (name in agents and agents[name] is None):
             target = target.with_name("remove_" + target.name)
             atomic(target, "")
         elif isinstance(agents.get(name), tuple):

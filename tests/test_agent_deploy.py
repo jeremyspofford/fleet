@@ -104,10 +104,8 @@ class DeployTests(Fixture):
         servers = self.read_json(f"{agent_deploy.TREE}/claude/.mcp.json")["mcpServers"]
         self.assertEqual(set(servers), {"fleet", "calendar"})
         self.assertEqual(servers["fleet"]["command"], str(tree / "gateway/run-claude"))
-        self.assertEqual(
-            servers["fleet"]["env"],
-            {"DOCS_API_KEY": "${DOCS_API_KEY}", "ISSUES_TOKEN": "${ISSUES_TOKEN}"},
-        )
+        # Owner ruling 2026-11-20, point 13: the gateway reads ~/.secrets; its entry names no variable.
+        self.assertNotIn("env", servers["fleet"])
         self.assertEqual(
             servers["calendar"], {"type": "http", "url": "https://mcp.example.com/calendar"}
         )
@@ -115,7 +113,11 @@ class DeployTests(Fixture):
         self.assertEqual(served["docs"]["pass_env"], ["DOCS_API_KEY"])
         self.assertEqual(served["issues"]["bearer_token_env"], "ISSUES_TOKEN")
         self.assertNotIn("description", served["docs"])
-        self.assertEqual(os.readlink(tree / "claude/skills"), str(self.home / ".agents/skills"))
+        # Owner ruling 2026-11-20, point 5: one link per skill, never a skills link in the plugin.
+        self.assertFalse((tree / "claude/skills").is_symlink())
+        self.assertEqual(
+            os.readlink(self.home / ".claude/skills/notes"), str(self.home / ".agents/skills/notes")
+        )
         rules = self.home / ".claude/rules/fleet.md"
         self.assertIn("Use plain words.", rules.read_text())
         extension = self.read_json(f"{agent_deploy.TREE}/gemini/gemini-extension.json")
@@ -142,19 +144,16 @@ class DeployTests(Fixture):
         result = self.run_plan()
         tree = self.home / agent_deploy.TREE
         codex = tomllib.loads((self.home / ".codex/config.toml").read_text())["mcp_servers"]
-        self.assertEqual(codex["fleet"]["env_vars"], ["DOCS_API_KEY", "ISSUES_TOKEN"])
+        self.assertNotIn("env_vars", codex["fleet"])
         self.assertEqual(codex["fleet"]["command"], str(tree / "gateway/run-codex"))
         self.assertEqual(codex["calendar"], {"url": "https://mcp.example.com/calendar"})
         opencode = self.read_json(".config/opencode/opencode.json")
         self.assertEqual(opencode["$schema"], agent_deploy.OPENCODE_SCHEMA)
         self.assertEqual(opencode["mcp"]["fleet"]["command"], [str(tree / "gateway/run-opencode")])
-        self.assertEqual(
-            opencode["mcp"]["fleet"]["environment"],
-            {"DOCS_API_KEY": "{env:DOCS_API_KEY}", "ISSUES_TOKEN": "{env:ISSUES_TOKEN}"},
-        )
+        self.assertNotIn("environment", opencode["mcp"]["fleet"])
         self.assertEqual(opencode["instructions"], [str(tree / "rules/opencode.md")])
         pi = self.read_json(".pi/agent/mcp.json")["mcpServers"]
-        self.assertEqual(pi["fleet"]["env"]["ISSUES_TOKEN"], "${ISSUES_TOKEN}")
+        self.assertNotIn("env", pi["fleet"])
         wrapper = (tree / "gateway/run-pi").read_text()
         self.assertIn("scripts/gateway.py", wrapper)
         self.assertIn(str(tree / "gateway/pi.json"), wrapper)
@@ -193,9 +192,12 @@ class DeployTests(Fixture):
         changed = MANIFEST.replace(
             'pass_env = ["DOCS_API_KEY"]', 'pass_env = ["DOCS_API_KEY", "DOCS_REGION"]'
         )
+        before = config.read_bytes()
         self.run_plan(changed)
+        # A server's new variable changes no agent settings file; the gateway reads ~/.secrets.
+        self.assertEqual(config.read_bytes(), before)
         entry = tomllib.loads(config.read_text())["mcp_servers"]["fleet"]
-        self.assertEqual(entry["env_vars"], ["DOCS_API_KEY", "DOCS_REGION", "ISSUES_TOKEN"])
+        self.assertNotIn("env_vars", entry)
         self.assertFalse(entry["enabled"])
 
     def test_unrecorded_values_stay_the_users_and_are_never_adopted(self):
@@ -333,7 +335,9 @@ class DeployTests(Fixture):
         state.parent.mkdir(parents=True)
         state.write_text(json.dumps(legacy))
         result = self.run_plan()
-        self.assertFalse((self.home / ".claude/skills/notes").is_symlink())
+        # The legacy link goes; Fleet's per-skill link (point 5) takes its place.
+        link = self.home / ".claude/skills/notes"
+        self.assertEqual(os.readlink(link), str(self.home / agent_deploy.SKILLS / "notes"))
         self.assertFalse((self.home / ".claude/settings.json").exists())
         self.assertIn(".codex/config.toml", result.released)
         self.assertIn("[mcp_servers.fleet]", (self.home / ".codex/config.toml").read_text())

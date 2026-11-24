@@ -434,6 +434,19 @@ def read_view(args, home, saved_profile):
                 f"FAIL · run {display} diff to inspect drift" if drift else "PASS · no drift",
             )
         ]
+        if drift:
+            # Name each file: a chezmoi status line ends with its path; agent lines name theirs.
+            names = [
+                line[3:] if not line.startswith("agent ") else line
+                for line in drift.splitlines()
+                if line.strip()
+            ]
+            pairs.append(
+                (
+                    "Drifted files",
+                    ", ".join(name if name.startswith("agent ") else "~/" + name for name in names),
+                )
+            )
         for label, path in [
             ("Manager checkout", home / MANAGER),
             ("Content checkout", dotfiles_library.active(home)),
@@ -801,15 +814,27 @@ def restore_shared_entries(home, folder, operations):
     ]
 
 
-def transaction(home, operations, label, selected=None, require_word=None, tree_removals=()):
-    """Record the pre-change inventory, confirm, back up, and execute exact file operations."""
+def transaction(
+    home,
+    operations,
+    label,
+    selected=None,
+    require_word=None,
+    tree_removals=(),
+    software=(),
+    before_files=None,
+):
+    """Record the pre-change inventory, confirm, back up, and execute exact file operations.
+
+    Software rows appear in the review. before_files runs after the backup, before any file change.
+    """
     operations = [(name, source) for name, source in operations if name != registry.REGISTRY]
     backup_paths = sorted(
         {name for name, _ in operations if not Path(name).is_absolute()} | {registry.REGISTRY}
     )
     account = RunAccount(home, ROOT)
     account.checkouts = []
-    account.software = []
+    account.software = list(software)
     folder = manager.backup_location(home)
     account.locations.update(
         {
@@ -883,6 +908,8 @@ def transaction(home, operations, label, selected=None, require_word=None, tree_
         if source.is_dir():
             shutil.copytree(source, folder / "previous-chezmoi-source", symlinks=True)
         try:
+            if before_files:
+                before_files(account)
             # External target backups follow the original symlink inventory above.
             for name, saved in operations:
                 target = home / name
@@ -1690,6 +1717,12 @@ def remove_fleet(home, selected=None, restored=(), require_word="uninstall"):
     _, shared = agent_deploy.removal_operations(home, scratch_folder())
     operations.update(shared)
     operations.update(dict(restored))
+    # Fleet uninstalls the plugins it installed. Plugins it never recorded stay the user's.
+    # Restoring a backup at uninstall leaves plugins alone until the owner rules on it.
+    plugins = (
+        [] if selected else agent_deploy.uninstall_plugins_plan(home, read_toml(home / PROFILE))
+    )
+    rows = agent_deploy.plugin_software(agent_deploy.Plan(plugin_removals=plugins))
     return transaction(
         home,
         sorted(operations.items()),
@@ -1702,6 +1735,10 @@ def remove_fleet(home, selected=None, restored=(), require_word="uninstall"):
             home / ".fleet/tui",
             home / ".fleet/agents",
         ],
+        software=rows,
+        before_files=lambda account: agent_deploy.uninstall_plugins(
+            plugins, enrollment.agent_manifest(), account
+        ),
     )
 
 
