@@ -433,6 +433,19 @@ def read_view(args, home, saved_profile):
                 f"FAIL · run {display} diff to inspect drift" if drift else "PASS · no drift",
             )
         ]
+        if drift:
+            # Name each file: a chezmoi status line ends with its path; agent lines name theirs.
+            names = [
+                line[3:] if not line.startswith("agent ") else line
+                for line in drift.splitlines()
+                if line.strip()
+            ]
+            pairs.append(
+                (
+                    "Drifted files",
+                    ", ".join(name if name.startswith("agent ") else "~/" + name for name in names),
+                )
+            )
         for label, path in [
             ("Manager checkout", home / MANAGER),
             ("Content checkout", dotfiles_library.active(home)),
