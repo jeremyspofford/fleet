@@ -169,14 +169,20 @@ class MiseConfigTests(unittest.TestCase):
         )
         (fake / "chezmoi").chmod(0o755)
         env = dict(self.env, PATH=f"{fake}:{self.env['PATH']}")
+        # No terminal, so apply.sh takes the unattended branch that the fake stops.
         result = subprocess.run(
             ["bash", str(helpers.ROOT / "install.sh")],
             env=env,
             cwd=self.home,
             text=True,
             capture_output=True,
+            start_new_session=True,
         )
-        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        output = result.stdout + result.stderr
+        self.assertNotEqual(result.returncode, 0, output)
+        # The handover ran: Fleet's pins left the global config before the stop.
+        self.assertIn("Mise: Fleet's pins moved to ~/.config/mise/conf.d/fleet.toml.", output)
+        self.assertFalse((self.home / USER).exists())
         listed = self.mise("ls", "--current")
         self.assertEqual(listed.returncode, 0, listed.stdout + listed.stderr)
         for tool in rendered["tools"]:
