@@ -6,6 +6,7 @@ Help: PYTHONPATH=scripts:tests python3 tests/test_registry.py --help.
 
 import copy
 import json
+import os
 from pathlib import Path
 import socket
 import tempfile
@@ -15,6 +16,7 @@ from unittest.mock import patch
 import test_command as commands
 from common import atomic, toml
 import registry
+import run_index
 
 
 class RegistryTests(unittest.TestCase):
@@ -22,6 +24,10 @@ class RegistryTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.home = Path(self.temp.name)
+        # The saved machine name is read from HOME. Never read the real one (report F-053).
+        home = patch.dict(os.environ, {"HOME": str(self.home)})
+        home.start()
+        self.addCleanup(home.stop)
         atomic(
             self.home / ".fleet/profile.toml",
             toml(
@@ -40,8 +46,10 @@ class RegistryTests(unittest.TestCase):
             other = registry.refresh(
                 self.home, "0.2.0", self.home / ".fleet/backups/first", "SUCCESS"
             )
-        # Another machine has its own ID. Without that, this record would be a rename of it.
+        # Another machine has its own ID and its own saved name.
+        # Without them, this record would be a rename of the first one.
         (self.home / registry.MACHINE_ID).unlink()
+        (self.home / run_index.NAME_FILE).unlink()
         with patch("socket.gethostname", return_value="this-machine"):
             first = registry.refresh(
                 self.home, "0.2.1", self.home / ".fleet/backups/second", "SUCCESS"

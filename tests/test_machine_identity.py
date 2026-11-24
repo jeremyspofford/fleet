@@ -6,6 +6,7 @@ Help: PYTHONPATH=scripts:tests python3 tests/test_machine_identity.py --help.
 """
 
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -42,6 +43,10 @@ class IdentityTests(unittest.TestCase):
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
         self.base = Path(folder.name)
+        # The saved machine name is read from HOME. Never read the real one (report F-053).
+        home = patch.dict(os.environ, {"HOME": str(self.base)})
+        home.start()
+        self.addCleanup(home.stop)
 
     def home(self, name):
         path = self.base / name
