@@ -1261,14 +1261,14 @@ def difference_problems(not_reviewed, others, unconfirmed):
     if not_reviewed and unconfirmed:
         # A "?" record: an answer that Fleet could not read safely. S may have been pressed.
         problems.append(
-            f"Not confirmed: {shown('~/' + path for path in not_reviewed)}. "
-            "Fleet could not confirm your answer for these files."
+            f"Unconfirmed: {shown('~/' + path for path in not_reviewed)}. "
+            "Fleet could not confirm an earlier answer. That answer may have kept these files."
         )
     elif not_reviewed:
-        # After q, chezmoi never asks about later files. Their local changes are not reviewed.
+        # After q, or an answer Fleet could not record, no answer covers these files.
         problems.append(
             f"Not reviewed: {shown('~/' + path for path in not_reviewed)}. "
-            "The apply stopped before chezmoi asked about these local changes."
+            "Fleet saw no answer for these local changes."
         )
     if others:
         problems.append(
@@ -1279,7 +1279,7 @@ def difference_problems(not_reviewed, others, unconfirmed):
 
 
 @contextlib.contextmanager
-def terminal_kept(path="/dev/tty"):
+def terminal_restored(path="/dev/tty"):
     """Restore the terminal's settings after the block, however the block ends."""
     try:
         descriptor = os.open(path, os.O_RDWR | os.O_NOCTTY)
@@ -1302,11 +1302,29 @@ def terminal_kept(path="/dev/tty"):
         os.close(descriptor)
 
 
-def sort_differences(status, choices):
+def every_run_scripts(managed):
+    """Return the targets of scripts that run on every apply, from chezmoi managed JSON.
+
+    MANAGED is the output of chezmoi managed --include scripts --path-style all --format json.
+    A run_once_ or run_onchange_ script is left out: if it did not run, the run fails.
+    """
+    try:
+        entries = json.loads(managed or "{}")
+    except ValueError:
+        return set()
+    return {
+        target
+        for target, entry in entries.items()
+        if Path(entry.get("sourceRelative", "")).name.startswith("run_")
+        and not Path(entry["sourceRelative"]).name.startswith(("run_once_", "run_onchange_"))
+    }
+
+
+def sort_differences(status, choices, every_run=frozenset()):
     """Split what still differs after an attended apply into kept, not reviewed, and others.
 
-    STATUS is chezmoi status output. CHOICES holds apply_terminal.py's records: a key, a tab,
-    and chezmoi's question.
+    STATUS is chezmoi status output. CHOICES holds apply_terminal.py's records: a menu word,
+    a tab, and chezmoi's question. EVERY_RUN names scripts that run on every apply.
     A first status column of M or D is a local change: an edit or a deletion.
     A local change counts as kept when chezmoi asked about it, or once the user pressed S.
     """
@@ -1316,8 +1334,8 @@ def sort_differences(status, choices):
     asked = {prompt.removesuffix(CONFLICT_TAIL) for _, prompt in records}
     kept, not_reviewed, others = [], [], []
     for line in status.splitlines():
-        # A second-column R is a script that chezmoi runs, not a file that can conflict.
-        if len(line) <= 3 or line[1] == "R":
+        # A second-column R is a script. One that runs on every apply is no conflict.
+        if len(line) <= 3 or (line[1] == "R" and line[3:] in every_run):
             continue
         path = line[3:]
         if line[0] not in "MD":
@@ -1399,7 +1417,7 @@ def apply_confirmed_plan(
     account.confirm_files(fingerprint)
     choices = backup_path / "conflict-choices.txt"
     # apply_terminal.py sets the terminal raw. Even a killed helper must leave it usable.
-    with terminal_kept():
+    with terminal_restored():
         result = subprocess.run(
             [bash(), str(ROOT / "scripts/apply.sh")],
             env={**os.environ, "FLEET_APPLY_CHOICES": str(choices)},
@@ -1418,7 +1436,9 @@ def apply_confirmed_plan(
         if not has_terminal():
             raise ValueError(kept_files_message(status))
         recorded = choices.read_text() if choices.is_file() else ""
-        kept_paths, not_reviewed, others = sort_differences(status, recorded)
+        listing = ["managed", "--include", "scripts", "--path-style", "all", "--format", "json"]
+        every_run = every_run_scripts(run("chezmoi", *listing))
+        kept_paths, not_reviewed, others = sort_differences(status, recorded, every_run)
         kept = set(kept_paths)
         if kept_paths:
             warnings.append(kept_by_you_message(kept_paths))

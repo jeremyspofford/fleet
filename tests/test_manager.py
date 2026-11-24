@@ -852,8 +852,8 @@ class EnrollmentTests(unittest.TestCase):
                 ]
                 before = path.read_bytes()
                 output = self.terminal(answers, configure=True, raw=True)
-                # chezmoi runs on its own terminal and asks it for its background color and
-                # cursor position, as without Fleet. A terminal answers silently; neither is color.
+                # chezmoi runs on its own terminal and asks it for its cursor position, as without
+                # Fleet. A terminal answers silently, and that query is not color.
                 plain = output.replace("\x1b[6n", "")
                 self.assertNotIn("\x1b[", plain)
                 self.assertIn("4. Choose your domain", output)

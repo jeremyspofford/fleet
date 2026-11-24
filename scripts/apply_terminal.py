@@ -94,7 +94,7 @@ class Relay:
         # The terminal's erase key edits a line. Any other control byte, or an escape sequence,
         # makes the line unconfirmed: chezmoi may read it differently from what Fleet sees.
         self.erase = erase
-        self.unsure = False
+        self.unconfirmed = False
 
     def show(self, data):
         os.write(self.terminal, data)
@@ -136,11 +136,11 @@ class Relay:
                 self.ahead = True
             if byte in (0x0D, 0x0A):
                 self.answered()
-                self.typed, self.unsure = b"", False
+                self.typed, self.unconfirmed = b"", False
             elif byte == self.erase:
                 self.typed = self.typed[:-1]
             elif byte < 0x20 or byte == 0x7F:
-                self.unsure = True
+                self.unconfirmed = True
             else:
                 self.typed += bytes([byte])
 
@@ -176,10 +176,12 @@ class Relay:
             done = True
         if done:
             self.escape = None
-            if not TERMINAL_ANSWER.fullmatch(self.sequence):
-                self.unsure = True
-                if self.menu is None:
-                    self.ahead = True
+            # Once a menu shows, chezmoi has read its own answers. Any sequence is then a key,
+            # even one shaped like a cursor answer, such as Ctrl+F3 (ESC [ 1 ; 5 R).
+            if self.menu is not None:
+                self.unconfirmed = True
+            elif not TERMINAL_ANSWER.fullmatch(self.sequence):
+                self.unconfirmed, self.ahead = True, True
         return True
 
     def answered(self):
@@ -187,7 +189,7 @@ class Relay:
             return
         question, choices, clean = self.menu
         self.menu, self.ahead = None, False
-        if not clean or self.unsure:
+        if not clean or self.unconfirmed:
             key = "?"
         else:
             key = resolve(self.typed.decode(errors="replace"), choices)

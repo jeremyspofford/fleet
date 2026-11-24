@@ -178,6 +178,25 @@ class ApplyTerminalTests(unittest.TestCase):
         self.assertNotIn("hunter2", output)
         self.assertEqual(self.records(), "")
 
+    def test_scripts_that_did_not_run_after_quit_still_fail_the_run(self):
+        # Review F-076, item 3, with real chezmoi: q stops before any script runs.
+        scripts = [
+            ("run_every.sh", "true\n"),
+            ("run_once_new.sh", "true\n"),
+            ("run_onchange_x.sh", "true\n"),
+        ]
+        self.real_chezmoi(["a"], scripts)
+        code, output = self.run_apply([(b"Choose [", b"q\r", 0)])
+        self.assertEqual(code, 0, output)
+        listing = ["chezmoi", "managed", "--include", "scripts", "--path-style", "all"]
+        managed = subprocess.run(
+            [*listing, "--format", "json"], env=self.env(), text=True, capture_output=True
+        ).stdout
+        every_run = manager.every_run_scripts(managed)
+        self.assertEqual(every_run, {"every.sh"})
+        _, _, others = manager.sort_differences(self.status(), self.records(), every_run)
+        self.assertEqual(others, ["new.sh", "x.sh"])
+
     def test_type_ahead_before_a_menu_is_never_recorded(self):
         # Review F-063, item 4: a line typed before the menu may be a secret.
         self.real_chezmoi(["a"], [("run_before_wait.sh", "sleep 1\n")])
@@ -205,7 +224,15 @@ class ApplyTerminalTests(unittest.TestCase):
     def test_an_answer_with_escape_or_control_bytes_is_never_recorded_as_skip_all(self):
         # Review F-072, Spec 3: chezmoi rejects these lines and asks again; q then quits.
         # The record must not say Skip-conflicts, or .b would count as kept unasked.
-        for typed in (b"\x1b[AS\r", b"s\x08S\r", b"\x1b[200~S\x1b[201~\r"):
+        # Review F-076: Ctrl+F3 (ESC[1;5R) and a late cursor answer look like terminal answers.
+        typed_lines = (
+            b"\x1b[AS\r",
+            b"s\x08S\r",
+            b"\x1b[200~S\x1b[201~\r",
+            b"\x1b[1;5RS\r",
+            b"\x1b[24;80RS\r",
+        )
+        for typed in typed_lines:
             with self.subTest(typed=typed):
                 self.setUp()
                 self.real_chezmoi(["a", "b"])
@@ -233,11 +260,12 @@ class ResolveTests(unittest.TestCase):
         for answer in ["", "x", "Secret123"]:
             self.assertIsNone(apply_terminal.resolve(answer, self.CHOICES))
 
-    def test_a_run_script_line_is_not_a_file_conflict(self):
-        # Review F-072: content with an every-run script must not fail every attended update.
-        status = "MM .a\n R run_every.sh\n"
-        kept, not_reviewed, others = manager.sort_differences(status, f"skip\t.a{TAIL}\n")
-        self.assertEqual((kept, not_reviewed, others), ([".a"], [], []))
+    def test_only_an_every_run_script_line_is_not_a_file_conflict(self):
+        # Review F-076: a run_once_ or run_onchange_ script that did not run still fails the run.
+        status = "MM .a\n R every.sh\n R new.sh\n R x.sh\n"
+        records = f"skip\t.a{TAIL}\n"
+        kept, not_reviewed, others = manager.sort_differences(status, records, {"every.sh"})
+        self.assertEqual((kept, not_reviewed, others), ([".a"], [], ["new.sh", "x.sh"]))
 
     def test_a_recorded_skip_all_keeps_every_file_and_a_question_mark_does_not(self):
         status = "MM .a\nMM .b\n"
@@ -247,7 +275,7 @@ class ResolveTests(unittest.TestCase):
         self.assertEqual((kept, not_reviewed), ([".a"], [".b"]))
 
 
-class TerminalKeptTests(unittest.TestCase):
+class TerminalRestoredTests(unittest.TestCase):
     """Review F-072, Spec 1: Fleet restores the terminal even when the helper is killed."""
 
     def test_the_settings_return_after_the_block_and_after_an_error(self):
@@ -255,18 +283,18 @@ class TerminalKeptTests(unittest.TestCase):
         self.addCleanup(os.close, master)
         self.addCleanup(os.close, slave)
         before = termios.tcgetattr(slave)
-        with manager.terminal_kept(os.ttyname(slave)):
+        with manager.terminal_restored(os.ttyname(slave)):
             tty.setraw(slave)
         self.assertEqual(termios.tcgetattr(slave), before)
         with self.assertRaises(RuntimeError):
-            with manager.terminal_kept(os.ttyname(slave)):
+            with manager.terminal_restored(os.ttyname(slave)):
                 tty.setraw(slave)
                 raise RuntimeError("the helper was killed")
         self.assertEqual(termios.tcgetattr(slave), before)
 
     def test_without_a_terminal_the_block_still_runs(self):
         ran = []
-        with manager.terminal_kept("/nonexistent/tty"):
+        with manager.terminal_restored("/nonexistent/tty"):
             ran.append(True)
         self.assertEqual(ran, [True])
 
@@ -276,12 +304,11 @@ class DifferenceProblemTests(unittest.TestCase):
 
     def test_unconfirmed_and_unreached_files_get_their_own_words(self):
         text = manager.difference_problems([".b"], [], unconfirmed=True)
-        self.assertIn(
-            "Not confirmed: ~/.b. Fleet could not confirm your answer for these files.", text
-        )
+        self.assertIn("Unconfirmed: ~/.b. Fleet could not confirm an earlier answer.", text)
+        self.assertIn("That answer may have kept these files.", text)
         self.assertNotIn("stopped before", text)
         text = manager.difference_problems([".b"], [".c"], unconfirmed=False)
-        self.assertIn("Not reviewed: ~/.b.", text)
+        self.assertIn("Not reviewed: ~/.b. Fleet saw no answer for these local changes.", text)
         self.assertIn("Managed files still differ after the apply: ~/.c.", text)
         self.assertEqual(manager.difference_problems([], [], unconfirmed=False), "")
 
