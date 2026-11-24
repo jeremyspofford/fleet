@@ -25,6 +25,12 @@ from test_manager import ROOT
 PROMPT = b"Machine name ["
 
 
+def other_version(version):
+    """Return another version with the same shape as VERSION, such as 99.99 for 26.04."""
+    nines = ".".join("9" * len(part) for part in version.split("."))
+    return nines if nines != version else ".".join("1" * len(part) for part in version.split("."))
+
+
 def files(home):
     return {
         str(path.relative_to(home)): path.read_bytes()
@@ -97,9 +103,11 @@ class FirstNameTests(unittest.TestCase):
         self.defaults_origin()
         self.fresh()
         facts = registry.release_facts()
-        if not facts.get("ID") or not facts.get("VERSION_ID") or facts["VERSION_ID"] == "1.0":
+        if not facts.get("ID") or not facts.get("VERSION_ID"):
             self.skipTest("This host's os-release has no distro version to contradict.")
-        wrong = f"box-{registry.sanitized(facts['ID'])}-1.0".encode()
+        wrong = (
+            f"box-{registry.sanitized(facts['ID'])}-{other_version(facts['VERSION_ID'])}".encode()
+        )
         answers = [(PROMPT, wrong + b"\n"), (PROMPT, b"typed-box\n")] + self.answers()
         output = self.terminal(answers, flags=[], auto_wizard=False)
         self.assertIn("but this machine runs", output)
@@ -116,8 +124,8 @@ class FirstNameTests(unittest.TestCase):
         )
         self.assertEqual(files(self.home), before)
         facts = registry.release_facts()
-        if facts.get("ID") and facts.get("VERSION_ID") and facts["VERSION_ID"] != "1.0":
-            wrong = f"box-{registry.sanitized(facts['ID'])}-1.0"
+        if facts.get("ID") and facts.get("VERSION_ID"):
+            wrong = f"box-{registry.sanitized(facts['ID'])}-{other_version(facts['VERSION_ID'])}"
             rejected = self.scripted("--machine-name", wrong)
             self.assertEqual(rejected.returncode, 1)
             self.assertIn("but this machine runs", rejected.stdout + rejected.stderr)
@@ -126,6 +134,27 @@ class FirstNameTests(unittest.TestCase):
         self.assertEqual(named.returncode, 0, named.stdout + named.stderr)
         self.assertEqual(run_index.saved_name(self.home), "scripted-box")
         self.assertEqual(list(registry.load(self.home)["machines"]), ["scripted-box"])
+
+    def test_an_enrolled_machine_on_an_old_store_layout_is_not_stopped(self):
+        # Review F-036, defect 1: Fleet 0.8 kept the profile in ~/.config/fleet.
+        self.install()
+        old = self.home / ".config/fleet/profile.toml"
+        old.parent.mkdir(parents=True)
+        (self.home / ".fleet/profile.toml").rename(old)
+        (self.home / run_index.NAME_FILE).unlink()
+        self.env.pop("FLEET_MACHINE_NAME", None)
+        result = self.scripted()
+        output = result.stdout + result.stderr
+        self.assertNotIn("A first enrollment needs a machine name", output)
+        self.assertEqual(result.returncode, 0, output)
+        self.assertTrue((self.home / ".fleet/profile.toml").is_file())
+
+    def test_the_installer_knows_every_old_store_that_migration_merges(self):
+        import store_migration
+
+        text = (ROOT / "install.sh").read_text()
+        for old in store_migration.MERGED:
+            self.assertIn(f"$HOME/{old}/profile.toml", text)
 
     def test_macos_and_windows_propose_their_system_and_ask_once(self):
         for system, suffix in (("Darwin", "macos"), ("Windows", "windows")):
@@ -150,6 +179,25 @@ class FirstNameTests(unittest.TestCase):
                     self.assertFalse(manager.choose_name(home, args, True))
                 self.assertEqual(asked, [f"dell-{suffix}"])
                 self.assertEqual(run_index.saved_name(home), f"dell-{suffix}")
+
+
+class VersionRuleTests(unittest.TestCase):
+    """Review F-036, defect 2: a taken-name suffix such as -2 is not a version."""
+
+    def release(self, folder, distro, version):
+        path = Path(folder) / "os-release"
+        path.write_text(f'ID={distro}\nVERSION_ID="{version}"\n')
+        return path
+
+    def test_a_taken_name_suffix_is_not_read_as_a_version(self):
+        with tempfile.TemporaryDirectory() as folder:
+            ubuntu = self.release(folder, "ubuntu", "24.04")
+            self.assertEqual(registry.version_conflict("dell-ubuntu-2", ubuntu), "")
+            self.assertEqual(registry.version_conflict("dell-ubuntu-24.04-2", ubuntu), "")
+            self.assertIn("ubuntu 22.04", registry.version_conflict("dell-ubuntu-22.04", ubuntu))
+            fedora = self.release(folder, "fedora", "41")
+            self.assertEqual(registry.version_conflict("dell-fedora-2", fedora), "")
+            self.assertIn("fedora 40", registry.version_conflict("dell-fedora-40", fedora))
 
 
 class ResumeTests(unittest.TestCase):
@@ -178,6 +226,25 @@ class ResumeTests(unittest.TestCase):
         self.assertEqual(list(registry.load(self.home)["machines"]), ["resume-box"])
         stages = run_index.install_stages(self.home)
         self.assertLessEqual({"detect", "software", "enrollment"}, set(stages))
+
+
+class DetectLineTests(unittest.TestCase):
+    """Review F-036, defect 3: the resume line belongs to a first enrollment only."""
+
+    def test_an_update_after_enrollment_prints_no_detect_line(self):
+        with tempfile.TemporaryDirectory() as folder:
+            home = Path(folder)
+            (home / ".fleet").mkdir()
+            (home / run_index.NAME_FILE).write_text("box\n")
+            run_index.complete_stage(home, "detect", {"name": "box"})
+            args = argparse.Namespace(machine_name=None)
+            for first, expected in (
+                (False, ""),
+                (True, "Detect: done earlier; machine name box.\n"),
+            ):
+                with contextlib.redirect_stdout(io.StringIO()) as output:
+                    self.assertFalse(manager.choose_name(home, args, first))
+                self.assertEqual(output.getvalue(), expected)
 
 
 class StageRecordTests(unittest.TestCase):

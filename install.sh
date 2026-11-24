@@ -256,9 +256,18 @@ for argument in "${arguments[@]}"; do
 done
 arguments=("${kept_arguments[@]}")
 # A first enrollment needs a name chosen on this machine. Without a terminal, stop before any write.
-if [[ $machine_name_given == 0 && -z ${FLEET_MACHINE_NAME:-} ]] &&
-	[[ ! -e $HOME/.fleet/profile.toml && ! -s $HOME/.fleet/machine-name ]] &&
-	[[ ! -e $HOME/.config/dotfiles/profile.toml && ! -e $HOME/.local/share/fleet/profile.toml ]] &&
+# An enrolled machine may keep its profile in an older store; store migration moves it later.
+# Keep this list equal to store_migration.MERGED; a test compares them.
+enrolled=0
+for profile in "$HOME/.fleet/profile.toml" "$HOME/.config/dotfiles/profile.toml" \
+	"$HOME/.local/share/fleet/profile.toml" "$HOME/.local/share/dotfleet/profile.toml" \
+	"$HOME/.config/fleet/profile.toml" "$HOME/.config/dotfleet/profile.toml" \
+	"$HOME/.local/state/fleet/profile.toml" "$HOME/.local/state/dotfleet/profile.toml"; do
+	[[ -e $profile ]] && enrolled=1
+done
+# FLEET_MACHINE_NAME is for tests only; tests and test containers set it explicitly.
+if [[ $machine_name_given == 0 && -z ${FLEET_MACHINE_NAME:-} && $enrolled == 0 ]] &&
+	[[ ! -s $HOME/.fleet/machine-name ]] &&
 	{ [[ ${FLEET_REMOTE_RUN:-0} == 1 ]] || ! { : </dev/tty; } 2>/dev/null; }; then
 	example=$(hostname 2>/dev/null || uname -n)
 	example=${example%%.*}

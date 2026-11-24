@@ -298,7 +298,12 @@ def version_conflict(name, release=Path("/etc/os-release")):
     distro, version = sanitized(facts.get("ID", "")), facts.get("VERSION_ID", "")
     if not distro or not version:
         return ""
+    # A version has the shape of this machine's: the same parts with the same digit counts.
+    # So a taken-name suffix such as -2 never reads as a version.
+    shape = [len(part) for part in version.split(".")]
     for found in re.finditer(rf"(?:^|-){re.escape(distro)}-(\d+(?:\.\d+)*)(?=-|$)", name.lower()):
+        if [len(part) for part in found.group(1).split(".")] != shape:
+            continue
         if found.group(1) != version:
             return (
                 f"{name} names {distro} {found.group(1)}, but this machine runs"

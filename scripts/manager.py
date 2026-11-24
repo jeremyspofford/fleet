@@ -507,7 +507,10 @@ def ask_machine_name(home):
 
 
 def name_needed(home, args, first):
-    """A first enrollment needs a name, unless one is saved or FLEET_MACHINE_NAME sets it."""
+    """A first enrollment needs a name, unless one is saved or FLEET_MACHINE_NAME sets it.
+
+    FLEET_MACHINE_NAME is for tests only. It names a test home without a prompt.
+    """
     return (
         first
         and not args.machine_name
@@ -526,8 +529,9 @@ def choose_name(home, args, first):
 
     stages = run_index.install_stages(home)
     if "detect" in stages and run_index.saved_name(home) and not args.machine_name:
-        print(f"Detect: done earlier; machine name {run_index.saved_name(home)}.")
+        # Only a resumed first enrollment says so. A later update of an enrolled machine is quiet.
         if first:
+            print(f"Detect: done earlier; machine name {run_index.saved_name(home)}.")
             run_index.complete_stage(home, "detect", dict(stages["detect"], earlier=True))
         return False
     if args.machine_name:
