@@ -308,36 +308,81 @@ class VersionRuleTests(unittest.TestCase):
 
     def test_chained_releases_are_all_removed_and_the_proposal_ends(self):
         # Review F-056: removing one release can expose the next one.
+        # Each expected name was worked out by hand from the rules, not taken from a run.
         cases = [
-            ("debian", "12", "", "LAPTOP-DEBIAN-11-10", "Linux"),
-            ("debian", "12", "Debian", "LAPTOP-DEBIAN-11-10", "WSL"),
-            ("debian", "12", "Debian-11-10-13", "DELL", "WSL"),
-            ("fedora", "41", "", "DESKTOP-FEDORA-40-39", "Linux"),
-            ("ubuntu", "24.04", "Ubuntu-22.04-23.10", "DELL", "WSL"),
+            ("debian", "12", "", "LAPTOP-DEBIAN-11-10", "Linux", "laptop-debian-debian"),
+            (
+                "debian",
+                "12",
+                "Debian",
+                "LAPTOP-DEBIAN-11-10",
+                "WSL",
+                "laptop-debian-debian-12-debian",
+            ),
+            ("debian", "12", "Debian-11-10-13", "DELL", "WSL", "dell-debian-12"),
+            ("fedora", "41", "", "DESKTOP-FEDORA-40-39", "Linux", "desktop-fedora-fedora"),
+            ("ubuntu", "24.04", "Ubuntu-22.04-23.10", "DELL", "WSL", "dell-ubuntu-24.04"),
             (
                 "opensuse-tumbleweed",
                 "20240101",
                 "openSUSE-Tumbleweed-20230101-20231201",
                 "DELL",
                 "WSL",
+                "dell-opensuse-tumbleweed-20240101",
             ),
         ]
-
-        def hang(signum, frame):
-            raise TimeoutError("proposed_name() did not finish within 5 seconds")
-
-        previous = signal.signal(signal.SIGALRM, hang)
-        self.addCleanup(signal.signal, signal.SIGALRM, previous)
         with tempfile.TemporaryDirectory() as folder:
-            for distro, version, scope, host, system in cases:
+            for distro, version, scope, host, system, expected in cases:
                 release = self.release(folder, distro, version)
                 with self.subTest(host=host, scope=scope, system=system):
-                    signal.alarm(5)
-                    try:
-                        name = registry.proposed_name(scope, release, host, None, system)
-                    finally:
-                        signal.alarm(0)
+                    name = self.propose_within_limit(scope, release, host, None, system)
+                    self.assertEqual(name, expected)
                     self.assertEqual(registry.version_conflict(name, release), "")
+
+    def test_a_chained_name_with_taken_names_runs_the_suffix_loop(self):
+        # -10 and -11 read as Debian 10 and 11, so after -2 to -9 the proposal is -12.
+        with tempfile.TemporaryDirectory() as folder:
+            home = Path(folder)
+            debian = self.release(folder, "debian", "12")
+            taken = ["laptop-debian-debian"] + [f"laptop-debian-debian-{n}" for n in range(2, 10)]
+            machines = {
+                name: dict(registry.blank(name), machine_id=f"{index:032x}")
+                for index, name in enumerate(taken, 1)
+            }
+            (home / ".fleet").mkdir()
+            (home / registry.REGISTRY).write_text(
+                registry.serialize({"schema_version": 1, "machines": machines})
+            )
+            name = self.propose_within_limit("", debian, "LAPTOP-DEBIAN-11-10", home, "Linux")
+            self.assertEqual(name, "laptop-debian-debian-12")
+
+    def test_a_version_with_a_suffix_keeps_its_release_in_the_proposal(self):
+        # Review F-061: Alpine edge reports VERSION_ID 3.21.0_alpha20240807.
+        with tempfile.TemporaryDirectory() as folder:
+            alpine = self.release(folder, "alpine", "3.21.0_alpha20240807")
+            for system, expected in (
+                ("WSL", "dell-alpine-3.21.0-alpine"),
+                ("Linux", "dell-alpine"),
+            ):
+                with self.subTest(system=system):
+                    name = self.propose_within_limit("Alpine", alpine, "DELL", None, system)
+                    self.assertEqual(name, expected)
+                    self.assertEqual(registry.version_conflict(name, alpine), "")
+            self.assertIn("alpine 3.20", registry.version_conflict("dell-alpine-3.20", alpine))
+
+    def propose_within_limit(self, *arguments):
+        """Run proposed_name() under a 5-second alarm that no except OSError can swallow."""
+
+        def hang(signum, frame):
+            raise self.failureException("proposed_name() did not finish within 5 seconds")
+
+        previous = signal.signal(signal.SIGALRM, hang)
+        signal.alarm(5)
+        try:
+            return registry.proposed_name(*arguments)
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, previous)
 
     def test_the_suffix_loop_stops_with_a_clear_error_at_its_limit(self):
         # A defect that rejects every suffix must stop the proposal, not hang it.

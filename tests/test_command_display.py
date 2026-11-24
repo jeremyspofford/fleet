@@ -59,6 +59,16 @@ class CommandDisplayTests(unittest.TestCase):
         self.assertIn("~/.local/bin/dotfleet", output)
         self.assert_quiet_status()
 
+    def assert_unchecked_update_hint(self, expected):
+        """Assert the hint for a home with no saved update check.
+
+        Enrollment ends with a check. It saves a result when the fixture upstream answers,
+        so remove that result first. The test then does not depend on that check.
+        """
+        (self.home / updates.CACHE).unlink(missing_ok=True)
+        hint = f"Updates           not checked yet — run: {expected} check"
+        self.assertIn(hint, self.cli("status"))
+
     def assert_cached_update_hint(self, expected):
         path = self.home / updates.CACHE
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -79,7 +89,7 @@ class CommandDisplayTests(unittest.TestCase):
 
     def test_helpers_use_alias_in_review_hints_and_help(self):
         self.assert_instructions(self.enroll_helpers(), "fleet")
-        self.assertIn("Updates           not checked yet — run: fleet check", self.cli("status"))
+        self.assert_unchecked_update_hint("fleet")
         self.assert_cached_update_hint("fleet")
         self.assertIn(
             "Use fleet domain set, tools set, groups set, or configure.", self.cli("status")
@@ -100,7 +110,7 @@ class CommandDisplayTests(unittest.TestCase):
         disabled = self.cli("groups", "set", "--name", "helpers", "--state", "off")
         self.assertIn("Update    dotfleet update", disabled)
         self.assertIn("Wizard    dotfleet configure", disabled)
-        self.assertIn("Updates           not checked yet — run: dotfleet check", self.cli("status"))
+        self.assert_unchecked_update_hint("dotfleet")
         self.assert_cached_update_hint("dotfleet")
         self.assertIn(
             "Use dotfleet domain set, tools set, groups set, or configure.",
@@ -113,7 +123,7 @@ class CommandDisplayTests(unittest.TestCase):
         executable.write_text('#!/bin/sh\nprintf "%s\\n" "Rancher fixture"\n')
         executable.chmod(0o755)
         self.assert_instructions(self.enroll_helpers(), "dotfleet")
-        self.assertIn("Updates           not checked yet — run: dotfleet check", self.cli("status"))
+        self.assert_unchecked_update_hint("dotfleet")
         self.assert_cached_update_hint("dotfleet")
         self.assertIn("Usage: dotfleet check", self.cli("check", "--help"))
         self.assertIn(

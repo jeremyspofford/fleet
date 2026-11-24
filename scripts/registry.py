@@ -278,9 +278,7 @@ def proposed_name(
         host = sanitized(hostname)
     if system == "WSL":
         base = "-".join(
-            part
-            for part in (sanitized(facts.get("ID", "")), sanitized(facts.get("VERSION_ID", "")))
-            if part
+            part for part in (sanitized(facts.get("ID", "")), release_version(facts)) if part
         )
         scope = sanitized(distro)
         # An upgraded WSL distro keeps its old name, such as Ubuntu-24.04 on 26.04.
@@ -305,6 +303,7 @@ def proposed_name(
     # Skip a suffix that reads as another release, such as -10 on Debian 12.
     # Only a suffix with as many digits as a one-part version can do that.
     # The loop reaches one only after many taken names, so this limit is never too low.
+    # An L-digit suffix needs about 10^(L-1) taken names first, and at most 10^L tries in all.
     limit = 10 * (len(taken) + 2) + 100
     while candidate in taken or version_conflict(candidate, release):
         if number > limit:
@@ -322,7 +321,7 @@ def without_other_releases(name, release=Path("/etc/os-release")):
     The distro ID stays, so laptop-debian-11 becomes laptop-debian on Debian 12.
     """
     facts = release_facts(release)
-    distro, version = sanitized(facts.get("ID", "")), facts.get("VERSION_ID", "")
+    distro, version = sanitized(facts.get("ID", "")), release_version(facts)
     if not distro or not version:
         return name
 
@@ -338,6 +337,16 @@ def without_other_releases(name, release=Path("/etc/os-release")):
     while name != previous:
         previous, name = name, re.sub(pattern, keep_or_drop, name)
     return name
+
+
+def release_version(facts):
+    """Return the release number that starts VERSION_ID, such as 3.21.0 for 3.21.0_alpha20240807.
+
+    The base name and the version rule both use this form, so a proposal passes its own rule.
+    Return "" when VERSION_ID starts with no number.
+    """
+    found = re.match(r"\d+(?:\.\d+)*", facts.get("VERSION_ID", ""))
+    return found.group(0) if found else ""
 
 
 def reads_as_version(number, version):
@@ -367,7 +376,7 @@ def same_release(number, version):
 def version_conflict(name, release=Path("/etc/os-release")):
     """Return a reason when NAME holds this distro's ID with another version, else ""."""
     facts = release_facts(release)
-    distro, version = sanitized(facts.get("ID", "")), facts.get("VERSION_ID", "")
+    distro, version = sanitized(facts.get("ID", "")), release_version(facts)
     if not distro or not version:
         return ""
     for found in re.finditer(rf"(?:^|-){re.escape(distro)}-(\d+(?:\.\d+)*)(?=-|$)", name.lower()):
