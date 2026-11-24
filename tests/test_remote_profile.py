@@ -6,6 +6,7 @@ Help: PYTHONPATH=scripts:tests python3 tests/test_remote_profile.py --help.
 """
 
 import json
+import socket
 import tomllib
 import unittest
 
@@ -52,10 +53,12 @@ class RemoteProfileTests(unittest.TestCase):
         before = self.caller_files()
         self.assertIn("Personal shortcut", self.call("domain", "list", "--machine", "beelink"))
         output = self.call("domain", "set", "--name", "personal", "--machine", "beelink")
-        self.assertIn("Machine · beelink", output)
+        # The first contact renamed the member to the name the target reports.
+        target = socket.gethostname()
+        self.assertIn(f"Machine · {target}", output)
         self.assertIn("Domain core → personal", " ".join(output.split()))
         self.assertIn("next update applies this change", output)
-        self.assertIn("beelink: domain set succeeded (exit 0).", output)
+        self.assertIn(f"{target}: domain set succeeded (exit 0).", output)
         self.assertEqual(self.caller_files(), before)
         test_remote.RemoteTests.assert_one_target_member(self)
         self.assertEqual(self.target_profile()["domain"], "personal")

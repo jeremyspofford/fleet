@@ -70,23 +70,30 @@ class CoreSession:
             return await process.wait()
         finally:
             child.close()
-            if process and process.returncode is None:
-                os.killpg(process.pid, signal.SIGTERM)
-                try:
-                    await asyncio.wait_for(process.wait(), 5)
-                except asyncio.TimeoutError:
-                    os.killpg(process.pid, signal.SIGKILL)
-                    await process.wait()
-            for task in tasks:
-                if not task.done():
-                    task.cancel()
-            if tasks:
-                await asyncio.gather(*tasks, return_exceptions=True)
-            if writer:
-                writer.close()
-                await writer.wait_closed()
-            else:
-                parent.close()
+            try:
+                if process and process.returncode is None:
+                    os.killpg(process.pid, signal.SIGTERM)
+                    try:
+                        await asyncio.wait_for(process.wait(), 5)
+                    except asyncio.TimeoutError:
+                        os.killpg(process.pid, signal.SIGKILL)
+                        await process.wait()
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                if tasks:
+                    await asyncio.gather(*tasks, return_exceptions=True)
+                if writer:
+                    writer.close()
+                    await writer.wait_closed()
+                else:
+                    parent.close()
+            finally:
+                # Close the subprocess transport now, while the loop runs. A transport left for
+                # garbage collection after the loop closes prints "Event loop is closed".
+                transport = getattr(process, "_transport", None)
+                if transport is not None:
+                    transport.close()
 
 
 def usage():

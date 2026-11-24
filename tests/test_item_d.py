@@ -10,6 +10,7 @@ import io
 import json
 import os
 import re
+import signal
 from pathlib import Path
 import subprocess
 import tempfile
@@ -190,7 +191,7 @@ class VersionRuleTests(unittest.TestCase):
     """Review F-036, defect 2: a taken-name suffix such as -2 is not a version."""
 
     def release(self, folder, distro, version):
-        path = Path(folder) / "os-release"
+        path = Path(folder) / f"{distro}-{version}-os-release"
         path.write_text(f'ID={distro}\nVERSION_ID="{version}"\n')
         return path
 
@@ -225,6 +226,177 @@ class VersionRuleTests(unittest.TestCase):
             debian = self.release(folder, "debian", "12")
             self.assertEqual(registry.version_conflict("dell-debian-9", debian), "")
             self.assertIn("debian 11", registry.version_conflict("dell-debian-11", debian))
+
+    def test_a_dotted_number_is_a_version_for_a_one_part_release_too(self):
+        # Review F-044, edge 3: a suffix is never dotted, so 11.5 can only be a version.
+        with tempfile.TemporaryDirectory() as folder:
+            debian = self.release(folder, "debian", "12")
+            self.assertIn("debian 11.5", registry.version_conflict("dell-debian-11.5", debian))
+
+    def test_a_more_or_less_precise_form_of_this_release_is_accepted(self):
+        # Review F-044, edge 5: each name names the running release, more or less precisely.
+        with tempfile.TemporaryDirectory() as folder:
+            ubuntu = self.release(folder, "ubuntu", "24.04")
+            self.assertEqual(registry.version_conflict("dell-ubuntu-24.04.1", ubuntu), "")
+            alpine = self.release(folder, "alpine", "3.20.3")
+            self.assertEqual(registry.version_conflict("dell-alpine-3.20", alpine), "")
+            debian = self.release(folder, "debian", "12")
+            self.assertEqual(registry.version_conflict("dell-debian-12.8", debian), "")
+            # A shared first part alone is not this release.
+            self.assertIn("alpine 3.2", registry.version_conflict("dell-alpine-3.2", alpine))
+            self.assertIn("ubuntu 24.10", registry.version_conflict("dell-ubuntu-24.10", ubuntu))
+
+    def test_a_proposal_skips_a_suffix_that_reads_as_another_release(self):
+        # Review F-044, edge 4: -10 and -11 read as Debian 10 and 11 on Debian 12.
+        with tempfile.TemporaryDirectory() as folder:
+            home = Path(folder)
+            debian = self.release(folder, "debian", "12")
+            taken = ["dell-debian"] + [f"dell-debian-{number}" for number in range(2, 10)]
+            machines = {
+                name: dict(registry.blank(name), machine_id=f"{index:032x}")
+                for index, name in enumerate(taken, 1)
+            }
+            (home / ".fleet").mkdir()
+            (home / registry.REGISTRY).write_text(
+                registry.serialize({"schema_version": 1, "machines": machines})
+            )
+            name = registry.proposed_name("", debian, "DELL-XPS", home, "Linux")
+            self.assertEqual(name, "dell-debian-12")
+            self.assertEqual(registry.version_conflict(name, debian), "")
+
+    def test_an_upgraded_wsl_distro_drops_its_old_release_from_the_proposal(self):
+        # Review F-051, Spec 4: an in-place upgrade keeps the WSL distro's old name.
+        with tempfile.TemporaryDirectory() as folder:
+            ubuntu = self.release(folder, "ubuntu", "26.04")
+            cases = {
+                "Ubuntu-24.04": "dell-ubuntu-26.04",
+                "Work-Ubuntu-24.04": "dell-ubuntu-26.04-work-ubuntu",
+                "Ubuntu-26.04": "dell-ubuntu-26.04",
+                "AlertVenture": "dell-ubuntu-26.04-alertventure",
+            }
+            for distro, expected in cases.items():
+                with self.subTest(distro=distro):
+                    name = registry.proposed_name(distro, ubuntu, "DELL", None, "WSL")
+                    self.assertEqual(name, expected)
+
+    def test_every_proposal_passes_the_version_rule(self):
+        # Fleet must never propose a name that its own prompt then rejects.
+        hosts = ["DELL-XPS", "DESKTOP-UBUNTU-22.04", "laptop-debian-11", "box"]
+        scopes = ["", "Ubuntu-22.04", "Debian-11.5", "Fedora-40-Lab", "Alpine-3.19", "lab"]
+        releases = [("ubuntu", "24.04"), ("debian", "12"), ("fedora", "41"), ("alpine", "3.20.3")]
+        with tempfile.TemporaryDirectory() as folder:
+            home = Path(folder)
+            (home / ".fleet").mkdir()
+            for distro, version in releases:
+                release = self.release(folder, distro, version)
+                for host in hosts:
+                    for scope in scopes:
+                        for system in ("WSL", "Linux"):
+                            base = registry.proposed_name(scope, release, host, None, system)
+                            taken = [base] + [f"{base}-{number}" for number in range(2, 15)]
+                            machines = {
+                                name: dict(registry.blank(name), machine_id=f"{index:032x}")
+                                for index, name in enumerate(taken, 1)
+                            }
+                            (home / registry.REGISTRY).write_text(
+                                registry.serialize({"schema_version": 1, "machines": machines})
+                            )
+                            for where in (None, home):
+                                name = registry.proposed_name(scope, release, host, where, system)
+                                with self.subTest(release=release.name, host=host, scope=scope):
+                                    self.assertEqual(registry.version_conflict(name, release), "")
+
+    def test_chained_releases_are_all_removed_and_the_proposal_ends(self):
+        # Review F-056: removing one release can expose the next one.
+        # Each expected name was worked out by hand from the rules, not taken from a run.
+        cases = [
+            ("debian", "12", "", "LAPTOP-DEBIAN-11-10", "Linux", "laptop-debian-debian"),
+            (
+                "debian",
+                "12",
+                "Debian",
+                "LAPTOP-DEBIAN-11-10",
+                "WSL",
+                "laptop-debian-debian-12-debian",
+            ),
+            ("debian", "12", "Debian-11-10-13", "DELL", "WSL", "dell-debian-12"),
+            ("fedora", "41", "", "DESKTOP-FEDORA-40-39", "Linux", "desktop-fedora-fedora"),
+            ("ubuntu", "24.04", "Ubuntu-22.04-23.10", "DELL", "WSL", "dell-ubuntu-24.04"),
+            (
+                "opensuse-tumbleweed",
+                "20240101",
+                "openSUSE-Tumbleweed-20230101-20231201",
+                "DELL",
+                "WSL",
+                "dell-opensuse-tumbleweed-20240101",
+            ),
+        ]
+        with tempfile.TemporaryDirectory() as folder:
+            for distro, version, scope, host, system, expected in cases:
+                release = self.release(folder, distro, version)
+                with self.subTest(host=host, scope=scope, system=system):
+                    name = self.propose_within_limit(scope, release, host, None, system)
+                    self.assertEqual(name, expected)
+                    self.assertEqual(registry.version_conflict(name, release), "")
+
+    def test_a_chained_name_with_taken_names_runs_the_suffix_loop(self):
+        # -10 and -11 read as Debian 10 and 11, so after -2 to -9 the proposal is -12.
+        with tempfile.TemporaryDirectory() as folder:
+            home = Path(folder)
+            debian = self.release(folder, "debian", "12")
+            taken = ["laptop-debian-debian"] + [f"laptop-debian-debian-{n}" for n in range(2, 10)]
+            machines = {
+                name: dict(registry.blank(name), machine_id=f"{index:032x}")
+                for index, name in enumerate(taken, 1)
+            }
+            (home / ".fleet").mkdir()
+            (home / registry.REGISTRY).write_text(
+                registry.serialize({"schema_version": 1, "machines": machines})
+            )
+            name = self.propose_within_limit("", debian, "LAPTOP-DEBIAN-11-10", home, "Linux")
+            self.assertEqual(name, "laptop-debian-debian-12")
+
+    def test_a_version_with_a_suffix_keeps_its_release_in_the_proposal(self):
+        # Review F-061: Alpine edge reports VERSION_ID 3.21.0_alpha20240807.
+        with tempfile.TemporaryDirectory() as folder:
+            alpine = self.release(folder, "alpine", "3.21.0_alpha20240807")
+            for system, expected in (
+                ("WSL", "dell-alpine-3.21.0-alpine"),
+                ("Linux", "dell-alpine"),
+            ):
+                with self.subTest(system=system):
+                    name = self.propose_within_limit("Alpine", alpine, "DELL", None, system)
+                    self.assertEqual(name, expected)
+                    self.assertEqual(registry.version_conflict(name, alpine), "")
+            self.assertIn("alpine 3.20", registry.version_conflict("dell-alpine-3.20", alpine))
+
+    def propose_within_limit(self, *arguments):
+        """Run proposed_name() under a 5-second alarm that no except OSError can swallow."""
+
+        def hang(signum, frame):
+            raise self.failureException("proposed_name() did not finish within 5 seconds")
+
+        previous = signal.signal(signal.SIGALRM, hang)
+        signal.alarm(5)
+        try:
+            return registry.proposed_name(*arguments)
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, previous)
+
+    def test_the_suffix_loop_stops_with_a_clear_error_at_its_limit(self):
+        # A defect that rejects every suffix must stop the proposal, not hang it.
+        def every_suffix_conflicts(name, release):
+            return "" if name == "dell-debian" else f"{name} names another release."
+
+        with tempfile.TemporaryDirectory() as folder:
+            debian = self.release(folder, "debian", "12")
+            with (
+                patch.object(registry, "version_conflict", every_suffix_conflicts),
+                patch.object(registry, "taken_names", return_value={"dell-debian"}),
+            ):
+                with self.assertRaisesRegex(ValueError, "no free machine name after 130 tries"):
+                    registry.proposed_name("", debian, "DELL", Path(folder), "Linux")
 
 
 class ResumeTests(unittest.TestCase):
