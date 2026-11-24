@@ -4,4 +4,11 @@
  original
 +not yet
 The secret check cannot prove that no secret remains. Review every added line.
-Type capture, then press Enter, to commit these files. Press Enter alone to cancel.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Confirm
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Commit these files into content, then push when origin is yours.
+  capture  Proceed with the change above.
+  cancel   Stop. Nothing changes.
+Press Enter alone to choose cancel.

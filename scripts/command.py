@@ -1344,7 +1344,7 @@ def dispatch(args, argument_parser, home):
         if args.command == "capture":
             import capture
 
-            return capture.run(home, args.file, display, lambda: update(home))
+            return capture.run(home, args.file, display, lambda: update(home), confirm)
         if args.command in ("status", "doctor", "content") or getattr(args, "action", None) in (
             "list",
             "show",

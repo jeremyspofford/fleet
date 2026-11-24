@@ -127,7 +127,8 @@ EXAMPLES = {
 #        Machines set-ssh: connection test failed; the saved target stays.
 #   130  Interrupted.
 # Diff --stat returns the same codes as diff. A failed remote connection returns nonzero.
-# Capture returns 1 when any named file is refused; the other files are still captured.
+# Capture returns 0 when captured or cancelled, and 1 when any named file is refused.
+# A refused file still lets the others be captured. Otherwise capture returns the update's code.
 def help_epilog(name, display, action=None):
     choices = EXAMPLES.get(name, name).split("; ")
     if action:

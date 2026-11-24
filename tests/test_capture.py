@@ -5,7 +5,15 @@ Usage: python3 -m unittest discover -s tests -v.
 Help: PYTHONPATH=scripts:tests python3 tests/test_capture.py --help.
 """
 
+import fcntl
+import os
+import pty
+import select
 import shutil
+import subprocess
+import sys
+import termios
+import time
 import unittest
 
 import test_command
@@ -16,11 +24,12 @@ MANIFEST = (
     'format="plain"\n'
     "[groups.extra]\n"
     'description="Extra shell lines"\n'
-    'blocks=[".zshrc"]\n'
+    'blocks=[".zshrc", ".profile"]\n'
     "[domains]\n"
     'core="Base only"\n'
 )
-PROMPT = b"Press Enter alone to cancel."
+PROFILE = "A\n# dotfleet:group extra begin\nX\n# dotfleet:group extra end\nX\n"
+PROMPT = b"Confirm [cancel]:"
 
 
 class CaptureTests(unittest.TestCase):
@@ -35,6 +44,8 @@ class CaptureTests(unittest.TestCase):
                 "dotfleet.toml": MANIFEST,
                 ".file": "original\n",
                 ".zshrc": ZSHRC,
+                ".profile": PROFILE,
+                ".tokenrc": "plain=1\n",
                 "packages/shell/.bashrc": "export SHELL_LINE=1\n",
             },
         )
@@ -91,6 +102,12 @@ class CaptureTests(unittest.TestCase):
         if str(self.home / ".local/bin") not in self.env["PATH"]:
             self.env["PATH"] = str(self.home / ".local/bin") + ":" + self.env["PATH"]
 
+    def home_env(self, home, name):
+        """Return this test's environment for another home, named NAME."""
+        env = {key: value.replace(str(self.home), str(home)) for key, value in self.env.items()}
+        env["FLEET_MACHINE_NAME"] = name
+        return env
+
     def git(self, repository, *arguments):
         return command("git", "-C", str(repository), *arguments, env=self.env)
 
@@ -102,6 +119,12 @@ class CaptureTests(unittest.TestCase):
 
     def test_a_capture_pushes_and_reaches_a_second_home(self):
         self.content_repository()
+        first = (self.home, dict(self.env))
+        second = self.base / "second"
+        second.mkdir()
+        self.home, self.env = second, self.home_env(second, "second-machine")
+        self.enroll(self.bare)
+        self.home, self.env = first
         self.enroll(self.bare)
         (self.home / ".file").write_text("original\ncaptured line\n")
         (self.home / ".bashrc").write_text("export SHELL_LINE=1\nexport STOW_EDIT=1\n")
@@ -115,16 +138,10 @@ class CaptureTests(unittest.TestCase):
         self.assertTrue(subject.startswith("capture: .file, .bashrc from "), subject)
         # The home file now equals its rendered file, so no drift remains.
         self.assertEqual(command("chezmoi", "status", env=self.env, cwd=self.home).strip(), "")
-        # A second machine receives the capture at its next update.
-        first = (self.home, dict(self.env))
-        second = self.base / "second"
-        second.mkdir()
-        self.env = {
-            key: value.replace(str(self.home), str(second)) for key, value in self.env.items()
-        }
-        self.env["FLEET_MACHINE_NAME"] = "second-machine"
-        self.home = second
-        self.enroll(self.bare)
+        # A second machine, enrolled before the capture, receives it at its next update.
+        self.home, self.env = second, self.home_env(second, "second-machine")
+        self.assertEqual((second / ".file").read_text(), "original\n")
+        test_command.CommandTests.cli(self, "update")
         self.assertEqual((second / ".file").read_text(), "original\ncaptured line\n")
         self.home, self.env = first
         self.assertEqual((self.home / ".file").read_text(), "original\ncaptured line\n")
@@ -191,7 +208,8 @@ class CaptureTests(unittest.TestCase):
         self.enroll(self.bare)
         before = self.git(self.bare, "rev-parse", "main").strip()
         (self.home / ".file").write_text("original\nnot yet\n")
-        output = self.capture(".file", answer=b"\n")
+        output = self.terminal(["capture", ".file"], [(PROMPT, b"nope\n"), (PROMPT, b"\n")])
+        self.assertIn("Choose capture, cancel. Press Enter to submit.", output)
         review = (ROOT / "tests/fixtures/views/capture review.txt").read_text()
         self.assertIn(review, output.replace("\r\n", "\n"))
         self.assertIn("Cancelled. Nothing changed.", output)
@@ -199,5 +217,157 @@ class CaptureTests(unittest.TestCase):
         self.assertEqual((self.home / ".file").read_text(), "original\nnot yet\n")
 
 
+class AskFileTests(unittest.TestCase):
+    """The terminal interface asks for the file in the terminal (review F-074, Standards)."""
+
+    def ask(self, typed):
+        master, slave = pty.openpty()
+
+        def controlling_terminal():
+            os.setsid()
+            fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
+
+        process = subprocess.Popen(
+            [sys.executable, "-c", "import capture; print(repr(capture.ask_file()))"],
+            env=dict(os.environ, PYTHONPATH=str(ROOT / "scripts")),
+            stdin=slave,
+            stdout=slave,
+            stderr=slave,
+            preexec_fn=controlling_terminal,
+        )
+        output, deadline = b"", time.monotonic() + 20
+        while process.poll() is None and time.monotonic() < deadline:
+            if select.select([master], [], [], 0.05)[0]:
+                output += os.read(master, 4096)
+                if b"Press Enter alone to cancel." in output and typed:
+                    os.write(master, typed)
+                    typed = b""
+        if process.poll() is None:
+            process.kill()
+            self.fail(f"ask_file() did not finish: {output!r}")
+        while select.select([master], [], [], 0.05)[0]:
+            output += os.read(master, 4096)
+        os.close(master)
+        os.close(slave)
+        return output.decode()
+
+    def test_a_typed_path_is_returned_and_enter_alone_cancels(self):
+        self.assertIn("'~/.zshrc'", self.ask(b"~/.zshrc\n"))
+        self.assertIn("''", self.ask(b"\n"))
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+class CaptureCorrectionTests(unittest.TestCase):
+    """Review F-074: one test per defect."""
+
+    setUp = CaptureTests.setUp
+    terminal = CaptureTests.terminal
+    content_repository = CaptureTests.content_repository
+    manager_origin = CaptureTests.manager_origin
+    enroll = CaptureTests.enroll
+    home_env = CaptureTests.home_env
+    git = CaptureTests.git
+    published = CaptureTests.published
+    capture = CaptureTests.capture
+
+    def test_a_home_file_without_a_final_newline_keeps_the_marker_on_its_own_line(self):
+        self.content_repository()
+        self.enroll(self.bare)
+        test_command.CommandTests.cli(self, "groups", "set", "--name", "extra", "--state", "off")
+        (self.home / ".zshrc").write_text("export BASE=1\nexport ADDED=1")
+        self.capture(".zshrc")
+        published = self.published(".zshrc")
+        self.assertIn("export ADDED=1\n# dotfleet:group extra begin\n", published)
+        self.assertEqual((self.home / ".zshrc").read_text(), "export BASE=1\nexport ADDED=1\n")
+
+    def test_an_edit_never_lands_inside_a_disabled_block(self):
+        self.content_repository()
+        self.enroll(self.bare)
+        test_command.CommandTests.cli(self, "groups", "set", "--name", "extra", "--state", "off")
+        self.assertEqual((self.home / ".profile").read_text(), "A\nX\n")
+        (self.home / ".profile").write_text("A\nY\n")
+        self.capture(".profile")
+        self.assertEqual(self.published(".profile"), PROFILE.removesuffix("X\n") + "Y\n")
+
+    def test_an_edit_that_spans_a_disabled_block_is_refused_by_name(self):
+        self.content_repository()
+        self.enroll(self.bare)
+        test_command.CommandTests.cli(self, "groups", "set", "--name", "extra", "--state", "off")
+        (self.home / ".profile").write_text("B\nY\n")
+        output = test_command.CommandTests.cli(self, "capture", ".profile", expected=1)
+        self.assertIn("~/.profile changes lines around the disabled group extra", output)
+
+    def newer_content(self):
+        """Push a content change to another file, as another machine would."""
+        other = self.base / "other"
+        command("git", "clone", "-q", str(self.bare), str(other))
+        (other / ".zshrc").write_text(ZSHRC + "export NEWER=1\n")
+        identity = ["-c", "user.name=T", "-c", "user.email=t@example.invalid"]
+        self.git(other, *identity, "commit", "-qam", "newer")
+        self.git(other, "push", "-q", "origin", "HEAD:main")
+
+    def test_a_cancelled_or_refused_capture_leaves_the_checkout_where_it_was(self):
+        self.content_repository()
+        self.enroll(self.bare)
+        (checkout,) = (self.home / ".fleet/dotfiles").iterdir()
+        before = self.git(checkout, "rev-parse", "HEAD").strip()
+        self.newer_content()
+        (self.home / ".file").write_text("original\nnot yet\n")
+        self.terminal(["capture", ".file"], [(PROMPT, b"\n")])
+        self.assertEqual(self.git(checkout, "rev-parse", "HEAD").strip(), before)
+        (self.home / ".file").write_text("original\nexport API_TOKEN=abcd1234efgh\n")
+        test_command.CommandTests.cli(self, "capture", ".file", expected=1)
+        self.assertEqual(self.git(checkout, "rev-parse", "HEAD").strip(), before)
+        # The next update still sees the newer content.
+        (self.home / ".file").write_text("original\n")
+        test_command.CommandTests.cli(self, "update")
+        self.assertIn("export NEWER=1", (self.home / ".zshrc").read_text())
+
+    def test_an_unreachable_origin_is_reported_as_unreachable(self):
+        self.content_repository()
+        self.enroll(self.bare)
+        (checkout,) = (self.home / ".fleet/dotfiles").iterdir()
+        self.git(checkout, "remote", "set-url", "origin", str(self.base / "gone.git"))
+        (self.home / ".file").write_text("original\noffline\n")
+        output = self.capture(".file", expected=1)
+        self.assertIn("Could not fetch content from origin.", output)
+        self.assertIn("origin could not be reached. The commit stays in ", output)
+        self.assertNotIn("not a repository you can push to", output)
+
+    def test_an_ssh_origin_never_waits_for_a_password(self):
+        self.content_repository()
+        self.enroll(self.bare)
+        (checkout,) = (self.home / ".fleet/dotfiles").iterdir()
+        self.git(checkout, "remote", "set-url", "origin", "ssh://git@example.invalid/content.git")
+        record = self.base / "ssh-arguments"
+        fake = self.base / "fake-ssh"
+        fake.mkdir()
+        (fake / "ssh").write_text(f'#!/bin/sh\nprintf "%s\\n" "$@" >>"{record}"\nexit 255\n')
+        (fake / "ssh").chmod(0o755)
+        self.env["PATH"] = f"{fake}:{self.env['PATH']}"
+        (self.home / ".file").write_text("original\nover ssh\n")
+        self.capture(".file", expected=1)
+        self.assertIn("BatchMode=yes", record.read_text())
+
+    def test_a_refused_file_is_left_alone_by_the_update(self):
+        self.content_repository()
+        self.enroll(self.bare)
+        (self.home / ".file").write_text("original\nexport API_TOKEN=abcd1234efgh\n")
+        (self.home / ".bashrc").write_text("export SHELL_LINE=1\nexport STOW_EDIT=1\n")
+        output = self.capture(".file", ".bashrc", expected=1)
+        self.assertIn("Fleet did not run the update, because a file was refused.", output)
+        self.assertNotIn("abcd1234efgh", output)
+        self.assertEqual(
+            (self.home / ".file").read_text(), "original\nexport API_TOKEN=abcd1234efgh\n"
+        )
+        self.assertIn("STOW_EDIT", self.published("packages/shell/.bashrc"))
+
+    def test_a_sensitive_file_name_is_refused(self):
+        self.content_repository()
+        self.enroll(self.bare)
+        (self.home / ".tokenrc").write_text("plain=2\n")
+        output = test_command.CommandTests.cli(self, "capture", ".tokenrc", expected=1)
+        self.assertIn("~/.tokenrc has a credential file name.", output)
