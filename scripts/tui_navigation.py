@@ -38,6 +38,7 @@ ACTIONS = {
     "dotfiles-use": ("Activate a downloaded repository", ("dotfiles", "use")),
     "dotfiles-remove": ("Remove a downloaded repository", ("dotfiles", "remove")),
     "configure": ("Configure — reopen the terminal wizard", ("configure",)),
+    "capture": ("Capture — copy an edited file into content", ("capture",)),
     "machines": ("List fleet members", ("machines", "list")),
     "machine-install": ("Deploy Fleet to a machine", ("machines", "install")),
     "machine-uninstall": ("Remove Fleet from a member", ("machines", "uninstall")),
@@ -76,6 +77,7 @@ AREAS = {
         "content",
         "dotfiles",
         "configure",
+        "capture",
     ),
     "Machines": (
         "machines",

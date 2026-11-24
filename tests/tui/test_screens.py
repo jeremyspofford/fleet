@@ -494,6 +494,14 @@ class ScreenTests(unittest.IsolatedAsyncioTestCase):
             await self.open_command(pilot, app, "configure")
         self.assertEqual(app.return_value, "configure")
 
+    async def test_capture_leaves_for_the_terminal(self):
+        # Capture asks for a file and a typed confirmation on the real terminal.
+        app = FleetApp(FixtureSession())
+        async with app.run_test() as pilot:
+            await self.settle(pilot, app)
+            await self.open_command(pilot, app, "capture")
+        self.assertEqual(app.return_value, "capture")
+
     async def test_topology_uses_shared_tree_and_only_connected_actions(self):
         records = {}
         for name, target in (("mini-pc", "mini-pc"), ("offline-record", "")):

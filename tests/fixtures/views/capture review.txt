@@ -1,0 +1,7 @@
+--- content/.file
++++ content/.file (captured)
+@@ -1 +1,2 @@
+ original
++not yet
+The secret check cannot prove that no secret remains. Review every added line.
+Type capture, then press Enter, to commit these files. Press Enter alone to cancel.

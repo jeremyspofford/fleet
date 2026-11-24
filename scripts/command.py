@@ -70,6 +70,14 @@ DESCRIPTIONS = {
         "A backup is a saved copy of managed files and the profile.\n"
         "List shows dates, recorded results, sizes, and locations without changing files."
     ),
+    "capture": (
+        "Copy edited home files into content, commit them, and push.\n"
+        "To capture means to copy an edit of a managed file back into content.\n"
+        "This takes whole files from plain and Stow content, for every machine.\n"
+        "A review and the typed word capture come before any commit.\n"
+        "It pushes only to an origin that you can push to; otherwise the commit stays local.\n"
+        "It refuses secrets, group marker changes, and conflicts with newer content."
+    ),
     "check": (
         "Fetch new update results.\n"
         "Status reads saved results; check fetches new results.\n"
@@ -1333,6 +1341,10 @@ def dispatch(args, argument_parser, home):
             return 0
         if args.command == "dotfiles":
             return dotfiles_command(home, args, display)
+        if args.command == "capture":
+            import capture
+
+            return capture.run(home, args.file, display, lambda: update(home))
         if args.command in ("status", "doctor", "content") or getattr(args, "action", None) in (
             "list",
             "show",
