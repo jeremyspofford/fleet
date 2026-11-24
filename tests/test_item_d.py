@@ -190,7 +190,7 @@ class VersionRuleTests(unittest.TestCase):
     """Review F-036, defect 2: a taken-name suffix such as -2 is not a version."""
 
     def release(self, folder, distro, version):
-        path = Path(folder) / "os-release"
+        path = Path(folder) / f"{distro}-{version}-os-release"
         path.write_text(f'ID={distro}\nVERSION_ID="{version}"\n')
         return path
 
@@ -225,6 +225,52 @@ class VersionRuleTests(unittest.TestCase):
             debian = self.release(folder, "debian", "12")
             self.assertEqual(registry.version_conflict("dell-debian-9", debian), "")
             self.assertIn("debian 11", registry.version_conflict("dell-debian-11", debian))
+
+    def test_a_dotted_number_is_a_version_for_a_one_part_release_too(self):
+        # Review F-044, edge 3: a suffix is never dotted, so 11.5 can only be a version.
+        with tempfile.TemporaryDirectory() as folder:
+            debian = self.release(folder, "debian", "12")
+            self.assertIn("debian 11.5", registry.version_conflict("dell-debian-11.5", debian))
+
+    def test_a_more_or_less_precise_form_of_this_release_is_accepted(self):
+        # Review F-044, edge 5: each name names the running release, more or less precisely.
+        with tempfile.TemporaryDirectory() as folder:
+            ubuntu = self.release(folder, "ubuntu", "24.04")
+            self.assertEqual(registry.version_conflict("dell-ubuntu-24.04.1", ubuntu), "")
+            alpine = self.release(folder, "alpine", "3.20.3")
+            self.assertEqual(registry.version_conflict("dell-alpine-3.20", alpine), "")
+            debian = self.release(folder, "debian", "12")
+            self.assertEqual(registry.version_conflict("dell-debian-12.8", debian), "")
+            # A shared first part alone is not this release.
+            self.assertIn("alpine 3.2", registry.version_conflict("dell-alpine-3.2", alpine))
+            self.assertIn("ubuntu 24.10", registry.version_conflict("dell-ubuntu-24.10", ubuntu))
+
+    def test_a_proposal_skips_a_suffix_that_reads_as_another_release(self):
+        # Review F-044, edge 4: -10 and -11 read as Debian 10 and 11 on Debian 12.
+        with tempfile.TemporaryDirectory() as folder:
+            home = Path(folder)
+            debian = self.release(folder, "debian", "12")
+            taken = ["dell-debian"] + [f"dell-debian-{number}" for number in range(2, 10)]
+            machines = {
+                name: dict(registry.blank(name), machine_id=f"{index:032x}")
+                for index, name in enumerate(taken, 1)
+            }
+            (home / ".fleet").mkdir()
+            (home / registry.REGISTRY).write_text(
+                registry.serialize({"schema_version": 1, "machines": machines})
+            )
+            name = registry.proposed_name("", debian, "DELL-XPS", home, "Linux")
+            self.assertEqual(name, "dell-debian-12")
+            self.assertEqual(registry.version_conflict(name, debian), "")
+
+    def test_a_proposal_whose_own_scope_names_another_release_still_ends(self):
+        # A WSL distro named Ubuntu-22.04, upgraded in place to 24.04. No suffix can fix it,
+        # so the proposal stays as is and the prompt explains the conflict.
+        with tempfile.TemporaryDirectory() as folder:
+            ubuntu = self.release(folder, "ubuntu", "24.04")
+            with patch.object(registry, "taken_names", return_value=set()):
+                name = registry.proposed_name("Ubuntu-22.04", ubuntu, "DELL", Path(folder), "WSL")
+            self.assertEqual(name, "dell-ubuntu-24.04-ubuntu-22.04")
 
 
 class ResumeTests(unittest.TestCase):

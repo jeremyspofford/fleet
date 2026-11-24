@@ -263,6 +263,7 @@ def proposed_name(
     The scope is the WSL distro's own name unless it equals the base distro and version.
     Linux: host and distro, such as dell-fedora. macOS: host-macos. Windows: host-windows.
     A name that another machine ID uses gets -2, then -3, until it is free.
+    A suffix that names another release of this distro is skipped.
     """
     distro = os.environ.get("WSL_DISTRO_NAME", "") if distro is None else distro
     hostname = socket.gethostname() if hostname is None else hostname
@@ -287,9 +288,34 @@ def proposed_name(
     name = "-".join(part for part in parts if part) or sanitized(hostname)
     taken = taken_names(home) if home is not None else set()
     candidate, number = name, 2
-    while candidate in taken:
+    # Skip a suffix that reads as another release, such as -10 on Debian 12.
+    # No suffix can fix a name that conflicts already. Then only taken names count.
+    # The prompt explains that conflict to the user.
+    check = not version_conflict(name, release)
+    while candidate in taken or (check and version_conflict(candidate, release)):
         candidate, number = f"{name}-{number}", number + 1
     return candidate
+
+
+def reads_as_version(number, version):
+    """Return True when NUMBER after the distro ID is a release, not a taken-name suffix.
+
+    A suffix such as -2 is one undotted number, so a dotted number is always a release.
+    For a one-part version, such as Fedora 41, an undotted number of as many digits is one too.
+    """
+    if "." in number:
+        return True
+    return "." not in version and len(number) == len(version)
+
+
+def same_release(number, version):
+    """Return True when one version is the other, or extends it by more parts.
+
+    So 24.04.1 names Ubuntu 24.04, and 3.20 names Alpine 3.20.3. Parts compare whole.
+    """
+    numbers, versions = number.split("."), version.split(".")
+    shared = min(len(numbers), len(versions))
+    return numbers[:shared] == versions[:shared]
 
 
 def version_conflict(name, release=Path("/etc/os-release")):
@@ -298,15 +324,9 @@ def version_conflict(name, release=Path("/etc/os-release")):
     distro, version = sanitized(facts.get("ID", "")), facts.get("VERSION_ID", "")
     if not distro or not version:
         return ""
-    # A taken-name suffix such as -2 is one undotted number. It must not read as a version.
-    # A one-part version, such as Fedora 41, counts only a number with as many digits.
-    # A dotted version, such as Ubuntu 24.04, counts every dotted number.
-    one_part = "." not in version
     for found in re.finditer(rf"(?:^|-){re.escape(distro)}-(\d+(?:\.\d+)*)(?=-|$)", name.lower()):
         number = found.group(1)
-        if (len(number) != len(version)) if one_part else ("." not in number):
-            continue
-        if number != version:
+        if reads_as_version(number, version) and not same_release(number, version):
             return (
                 f"{name} names {distro} {number}, but this machine runs"
                 f" {distro} {version}. Choose another name."
