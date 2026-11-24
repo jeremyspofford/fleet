@@ -751,6 +751,25 @@ class ScreenTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.pause(0.02)
         self.assertEqual(order[:2], ["dashboard stopped", "exit"])
 
+    async def test_back_to_the_menu_while_the_dashboard_loads_stops_it_first(self):
+        # Review F-046: Esc starts a new dashboard. The loading one must not be left behind.
+        order = []
+        app = self.stopping_app(order)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#menu", OptionList)
+            menu.focus()
+            await pilot.press("enter")
+            await pilot.pause()
+            self.assertIsInstance(app.screen, AreaScreen)
+            await pilot.press("escape")
+            for _ in range(20):
+                await pilot.pause(0.02)
+            await pilot.press("q")
+            for _ in range(20):
+                await pilot.pause(0.02)
+        self.assertEqual(order[:2], ["dashboard stopped", "exit"])
+
     async def test_a_quit_deferred_until_a_change_ends_stops_the_dashboard_first(self):
         order = []
         release = asyncio.Event()

@@ -553,6 +553,9 @@ class FleetApp(App[str]):
             if isinstance(self.screen, ActionScreen):
                 self.perform_action(self.screen, self.screen.action)
             elif len(self.screen_stack) == 1:
+                # Stop a dashboard that still loads.
+                # A worker left without a reference outlives exit.
+                await self.stop_dashboard()
                 self.worker = self.load_dashboard()
         else:
             await self.leave()
