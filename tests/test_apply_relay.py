@@ -1,6 +1,7 @@
-"""Check that apply.sh passes every terminal line to chezmoi and records only conflict keys.
+"""Check that apply.sh runs chezmoi on its own terminal and records only conflict answers.
 
-Each test runs apply.sh in a pseudo-terminal with a fake chezmoi and a hard time limit.
+Each test runs apply.sh in a pseudo-terminal under a hard time limit.
+Some tests use real chezmoi in a temporary home; others use a fake chezmoi.
 Usage: python3 -m unittest discover -s tests -v.
 Help: PYTHONPATH=scripts:tests python3 tests/test_apply_relay.py --help.
 """
@@ -10,6 +11,7 @@ import os
 from pathlib import Path
 import pty
 import select
+import shutil
 import signal
 import subprocess
 import tempfile
@@ -17,21 +19,25 @@ import termios
 import time
 import unittest
 
+import apply_terminal
+import manager
+
 ROOT = Path(__file__).resolve().parents[1]
-LIMIT = 20
+LIMIT = 30
 MENU = "(diff/overwrite/all-overwrite/skip/Skip-conflicts/quit)? "
+TAIL = " has changed since chezmoi last wrote it"
 
 
-class ApplyRelayTests(unittest.TestCase):
+class ApplyTerminalTests(unittest.TestCase):
     def setUp(self):
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
         self.base = Path(folder.name)
+        self.home = self.base / "home"
+        self.home.mkdir()
         self.bin = self.base / "bin"
         self.bin.mkdir()
-        self.temp = self.base / "tmp"
-        self.temp.mkdir()
-        self.out = self.base / "received"
+        self.out = self.home / "received"
         self.choices = self.base / "choices.txt"
 
     def fake_chezmoi(self, body):
@@ -40,92 +46,184 @@ class ApplyRelayTests(unittest.TestCase):
         path.write_text("#!/usr/bin/env bash\n" + body)
         path.chmod(0o755)
 
-    def run_apply(self, steps):
-        """Run apply.sh in a terminal. STEPS pairs expected text with bytes to type.
+    def env(self):
+        """Return a clean environment: this test's home, and no inherited XDG or chezmoi state."""
+        return {
+            "PATH": f"{self.bin}:/usr/bin:/bin",
+            "HOME": str(self.home),
+            "TERM": "xterm",
+            "OUT": str(self.out),
+            "FLEET_APPLY_CHOICES": str(self.choices),
+            "PYTHONDONTWRITEBYTECODE": "1",
+        }
 
-        Return the exit code and the output. The test fails if apply.sh outlives LIMIT seconds.
+    def real_chezmoi(self, files, scripts=()):
+        """Apply FILES with real chezmoi, then edit each locally, so each is a conflict."""
+        location = shutil.which("chezmoi", path=os.environ.get("PATH", "")) or str(
+            Path.home() / ".local/bin/chezmoi"
+        )
+        if not Path(location).exists():
+            self.skipTest("chezmoi is not installed")
+        (self.bin / "chezmoi").symlink_to(location)
+        source = self.home / ".local/share/chezmoi"
+        source.mkdir(parents=True)
+        for name in files:
+            (source / ("dot_" + name)).write_text(f"{name} from content\n")
+        subprocess.run(
+            ["chezmoi", "--no-tty", "apply"], env=self.env(), check=True, capture_output=True
+        )
+        for name in files:
+            (self.home / ("." + name)).write_text(f"{name} edited here\n")
+        for name, body in scripts:
+            (source / name).write_text("#!/usr/bin/env bash\n" + body)
+
+    def status(self):
+        return subprocess.run(
+            ["chezmoi", "status"], env=self.env(), text=True, capture_output=True
+        ).stdout
+
+    def run_apply(self, steps):
+        """Run apply.sh in a terminal. Return (exit code, output).
+
+        STEPS lists (text to wait for, bytes to type, seconds to wait before typing).
+        A step's text must appear after the previous step. The test fails past LIMIT seconds.
+        The terminal settings must be the same afterward.
         """
         master, slave = pty.openpty()
+        before = termios.tcgetattr(master)
 
         def controlling_terminal():
             os.setsid()
             fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
-            # A caller started in the background ignores Ctrl-C. A user's terminal does not.
             signal.signal(signal.SIGINT, signal.SIG_DFL)
 
-        env = {
-            "PATH": f"{self.bin}:/usr/bin:/bin",
-            "HOME": str(self.base),
-            "TMPDIR": str(self.temp),
-            "OUT": str(self.out),
-            "FLEET_APPLY_CHOICES": str(self.choices),
-        }
         process = subprocess.Popen(
             ["bash", str(ROOT / "scripts/apply.sh")],
-            env=env,
+            env=self.env(),
+            cwd=self.home,
             stdin=slave,
             stdout=slave,
             stderr=slave,
             preexec_fn=controlling_terminal,
         )
-        os.close(slave)
-        transcript, cursor, answered = b"", 0, 0
+        transcript, cursor, step = b"", 0, 0
         deadline = time.monotonic() + LIMIT
         try:
             while process.poll() is None and time.monotonic() < deadline:
-                ready, _, _ = select.select([master], [], [], 0.1)
-                if ready:
-                    try:
-                        transcript += os.read(master, 4096)
-                    except OSError:
-                        break
-                if answered < len(steps) and steps[answered][0] in transcript[cursor:]:
-                    os.write(master, steps[answered][1])
-                    cursor, answered = len(transcript), answered + 1
-            # The terminal closes just before the process ends, so wait out the remaining time.
+                if select.select([master], [], [], 0.05)[0]:
+                    transcript += os.read(master, 4096)
+                if step < len(steps) and steps[step][0] in transcript[cursor:]:
+                    _, typed, delay = steps[step]
+                    time.sleep(delay)
+                    os.write(master, typed)
+                    cursor, step = len(transcript), step + 1
             try:
                 process.wait(timeout=max(0.0, deadline - time.monotonic()))
             except subprocess.TimeoutExpired:
                 os.killpg(process.pid, signal.SIGKILL)
                 process.wait(timeout=5)
                 self.fail(f"apply.sh did not finish within {LIMIT} seconds:\n{transcript!r}")
+            while select.select([master], [], [], 0.05)[0]:
+                transcript += os.read(master, 4096)
+            after = termios.tcgetattr(master)
         finally:
             os.close(master)
+            os.close(slave)
+        self.assertEqual(after, before, "the terminal settings were not restored")
         return process.returncode, transcript.decode(errors="replace")
 
-    def test_a_content_script_that_reads_input_gets_the_line_and_nothing_is_recorded(self):
-        # Review F-063, items 1 and 4: an unknown prompt must not hang, and free text stays out.
-        self.fake_chezmoi(
-            "printf 'Type a word: '\nIFS= read -r word\nprintf '%s\\n' \"$word\" >\"$OUT\"\n"
-        )
-        code, output = self.run_apply([(b"Type a word: ", b"Secret123\n")])
-        self.assertEqual(code, 0, output)
-        self.assertEqual(self.out.read_text(), "Secret123\n")
-        self.assertFalse(self.choices.exists() and self.choices.read_text().strip())
+    def records(self):
+        return self.choices.read_text() if self.choices.exists() else ""
 
-    def test_a_conflict_key_is_recorded_trimmed_with_its_prompt(self):
-        # Review F-063, item 5: chezmoi accepts " S " as skip-all, so the record must too.
+    def test_three_conflicts_with_slow_answers_all_apply(self):
+        # Review F-065 blocker: a 1-second quiet time read as the end of chezmoi's output.
+        self.real_chezmoi(["a", "b", "c"])
+        code, output = self.run_apply([(b"Choose [", b"s\r", 2.0)] * 3)
+        self.assertEqual(code, 0, output)
+        self.assertEqual(output.count("File conflict"), 3, output)
+        self.assertEqual(self.status(), "MM .a\nMM .b\nMM .c\n")
+        expected = "".join(f"skip\t.{name}{TAIL}\n" for name in "abc")
+        self.assertEqual(self.records(), expected)
+
+    def test_a_terminals_answers_to_chezmoi_queries_are_not_typing(self):
+        # chezmoi 2.74.1 asks a terminal for its background color and cursor position.
+        # A real terminal answers with input bytes; they must not read as type-ahead.
+        self.real_chezmoi(["a", "b"])
+        answers = b"\x1b]11;rgb:0000/0000/0000\x1b\\\x1b[1;1R"
+        steps = [(b"\x1b[6n", answers, 0), (b"Choose [", b"S\r", 0)]
+        code, output = self.run_apply(steps)
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.records(), f"Skip-conflicts\t.a{TAIL}\n")
+        self.assertEqual(self.status(), "MM .a\nMM .b\n")
+
+    def test_a_quiet_content_script_does_not_end_the_apply(self):
+        self.real_chezmoi(["a"], [("run_before_quiet.sh", "sleep 2\n")])
+        code, output = self.run_apply([(b"Choose [", b"s\r", 0)])
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.records(), f"skip\t.a{TAIL}\n")
+
+    def test_a_content_script_reads_a_password_and_the_terminal_as_without_fleet(self):
+        # read -s hides input, read -p shows its prompt, and /dev/tty readers get their line.
+        script = (
+            'read -r -s -p "Password: " password\necho\n'
+            'read -r -p "Line: " line </dev/tty\n'
+            'printf "%s|%s" "$password" "$line" >"$HOME/received"\n'
+        )
+        self.real_chezmoi([], [("run_before_ask.sh", script)])
+        steps = [(b"Password: ", b"hunter2\r", 0), (b"Line: ", b"main\r", 0)]
+        code, output = self.run_apply(steps)
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.out.read_text(), "hunter2|main")
+        self.assertNotIn("hunter2", output)
+        self.assertEqual(self.records(), "")
+
+    def test_type_ahead_before_a_menu_is_never_recorded(self):
+        # Review F-063, item 4: a line typed before the menu may be a secret.
+        self.real_chezmoi(["a"], [("run_before_wait.sh", "sleep 1\n")])
+        steps = [(b"Applying", b"secret\r", 0), (b"Choose [", b"s\r", 0)]
+        code, output = self.run_apply(steps)
+        self.assertEqual(code, 0, output)
+        self.assertNotIn("secret", self.records())
+        self.assertNotIn("skip\t", self.records().splitlines()[0])
+
+    def test_a_skip_all_answer_with_spaces_is_recorded_as_the_menu_word(self):
         self.fake_chezmoi(
-            f"printf '.zshrc has changed since chezmoi last wrote it {MENU}'\n"
+            f"printf '.zshrc{TAIL} {MENU}'\n"
             'IFS= read -r reply\nprintf \'%s\\n\' "$reply" >"$OUT"\n'
         )
-        code, output = self.run_apply([(b"Choose [", b" S \n")])
+        code, output = self.run_apply([(b"Choose [", b" Sk \r", 0)])
         self.assertEqual(code, 0, output)
-        self.assertEqual(self.out.read_text(), " S \n")
-        self.assertEqual(
-            self.choices.read_text(), "S\t.zshrc has changed since chezmoi last wrote it\n"
-        )
+        self.assertEqual(self.out.read_text(), " Sk \n")
+        self.assertEqual(self.records(), f"Skip-conflicts\t.zshrc{TAIL}\n")
 
-    def test_no_temporary_folder_stays_after_a_run_or_a_ctrl_c(self):
-        # Review F-063, item 6.
-        self.fake_chezmoi("exit 0\n")
-        code, output = self.run_apply([])
-        self.assertEqual(code, 0, output)
-        self.assertEqual(list(self.temp.iterdir()), [])
+    def test_ctrl_c_stops_chezmoi_and_restores_the_terminal(self):
         self.fake_chezmoi("printf 'waiting\\n'\nsleep 30\n")
-        code, output = self.run_apply([(b"waiting", b"\x03")])
+        code, output = self.run_apply([(b"waiting", b"\x03", 0)])
         self.assertNotEqual(code, 0, output)
-        self.assertEqual(list(self.temp.iterdir()), [])
+
+
+class ResolveTests(unittest.TestCase):
+    """chezmoi 2.74.1 accepts a choice or any prefix that only one choice has (item 5)."""
+
+    CHOICES = ["diff", "overwrite", "all-overwrite", "skip", "Skip-conflicts", "quit"]
+
+    def test_every_form_of_skip_all_resolves_to_skip_conflicts(self):
+        for answer in ["S", "Sk", "Ski", "Skip", "Skip-", "Skip-conflicts", "  S  "]:
+            with self.subTest(answer=answer):
+                self.assertEqual(apply_terminal.resolve(answer, self.CHOICES), "Skip-conflicts")
+
+    def test_skip_quit_and_invalid_answers(self):
+        self.assertEqual(apply_terminal.resolve("sk", self.CHOICES), "skip")
+        self.assertEqual(apply_terminal.resolve("q", self.CHOICES), "quit")
+        for answer in ["", "x", "Secret123"]:
+            self.assertIsNone(apply_terminal.resolve(answer, self.CHOICES))
+
+    def test_a_recorded_skip_all_keeps_every_file_and_a_question_mark_does_not(self):
+        status = "MM .a\nMM .b\n"
+        kept, not_reviewed, _ = manager.sort_differences(status, f"Skip-conflicts\t.a{TAIL}\n")
+        self.assertEqual((kept, not_reviewed), ([".a", ".b"], []))
+        kept, not_reviewed, _ = manager.sort_differences(status, f"?\t.a{TAIL}\n")
+        self.assertEqual((kept, not_reviewed), ([".a"], [".b"]))
 
 
 if __name__ == "__main__":
