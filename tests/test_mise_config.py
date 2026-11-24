@@ -148,6 +148,46 @@ class MiseConfigTests(unittest.TestCase):
         self.assertTrue(backups, "the old file stays in the run's backup")
         self.assertTrue((self.home / CONFIG).is_file())
 
+    def test_an_interrupt_after_the_handover_leaves_every_tool_in_place(self):
+        # Jeremy's run 20261124-093020: Ctrl-C after the handover left no global Mise tools.
+        self.install()
+        saved = self.home / ".fleet/profile.toml"
+        profile = tomllib.loads(saved.read_text())
+        profile["pins"] = {"node": "24.1.0", "python": "3.13.0"}
+        saved.write_text(toml(profile))
+        self.install(defaults=False)
+        rendered = self.old_layout()
+        self.assertEqual(sorted(rendered["tools"]), ["node", "python"])
+        real = shutil.which("chezmoi", path=self.env["PATH"])
+        fake = self.base / "interrupting-bin"
+        fake.mkdir()
+        (fake / "chezmoi").write_text(
+            "#!/usr/bin/env bash\n"
+            "# Stop the apply that apply.sh starts, as Ctrl-C would. Pass every other call on.\n"
+            'for argument in "$@"; do [[ $argument == --error-on-conflict ]] && exit 130; done\n'
+            f'exec "{real}" "$@"\n'
+        )
+        (fake / "chezmoi").chmod(0o755)
+        env = dict(self.env, PATH=f"{fake}:{self.env['PATH']}")
+        # No terminal, so apply.sh takes the unattended branch that the fake stops.
+        result = subprocess.run(
+            ["bash", str(helpers.ROOT / "install.sh")],
+            env=env,
+            cwd=self.home,
+            text=True,
+            capture_output=True,
+            start_new_session=True,
+        )
+        output = result.stdout + result.stderr
+        self.assertNotEqual(result.returncode, 0, output)
+        # The handover ran: Fleet's pins left the global config before the stop.
+        self.assertIn("Mise: Fleet's pins moved to ~/.config/mise/conf.d/fleet.toml.", output)
+        self.assertFalse((self.home / USER).exists())
+        listed = self.mise("ls", "--current")
+        self.assertEqual(listed.returncode, 0, listed.stdout + listed.stderr)
+        for tool in rendered["tools"]:
+            self.assertIn(tool, listed.stdout, listed.stdout + listed.stderr)
+
 
 def usage():
     """Describe this module when help is requested directly."""

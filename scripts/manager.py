@@ -1287,6 +1287,9 @@ def apply_confirmed_plan(
         # Retire only this path's remembered entry; preserve all other conflict state.
         run("chezmoi", "state", "delete", "--bucket=entryState", "--key=" + str(path))
     if plan.get("mise_handover") is not None:
+        # Write Fleet's fragment before the old file goes. An interrupt between the two steps
+        # then leaves every pin in place. chezmoi later finds the fragment already current.
+        atomic(home / MISE, plan["generated"][MISE], 0o600)
         hand_over_mise(home, plan["mise_handover"], backup_path)
     import marketplaces
 
