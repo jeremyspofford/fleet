@@ -24,6 +24,7 @@ import struct
 import subprocess
 import sys
 import termios
+import time
 
 # chezmoi --no-tty asks: QUESTION (CHOICE/CHOICE/...)? and reads one line.
 MENU = re.compile(r"^(?P<question>.*) \((?P<choices>[A-Za-z]+(?:[/-][A-Za-z]+)*)\)\? $")
@@ -46,8 +47,14 @@ KEYS = {
     "all": ("a", "Apply remaining changes, but still ask about conflicts."),
     "quit": ("q", "Stop applying. Changes already made remain in place."),
 }
-# A terminal's answers to chezmoi's queries for its background color and cursor position.
-TERMINAL_ANSWER = re.compile(rb"\x1b\]11;[^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[\d+;\d+R")
+# chezmoi's queries for the terminal's background color and cursor position, and the answers.
+QUERIES = {b"\x1b]11;?": "color", b"\x1b[6n": "cursor"}
+ANSWERS = {
+    "color": re.compile(rb"\x1b\]11;[^\x07\x1b]*(?:\x07|\x1b\\)"),
+    "cursor": re.compile(rb"\x1b\[\d+;\d+R"),
+}
+# chezmoi waits about this many seconds for each answer. A later answer is typing.
+ANSWER_WAIT = 5.0
 # A partial line shows after this many seconds without output: a prompt may wait for input.
 QUIET = 0.2
 
@@ -91,6 +98,8 @@ class Relay:
         self.ahead = False
         # A terminal answers chezmoi's queries with escape sequences. They are not typing.
         self.escape = None
+        # Queries that chezmoi sent and still waits for: (kind, time sent). One answer each.
+        self.queries = []
         # The terminal's erase key edits a line. Any other control byte, or an escape sequence,
         # makes the line unconfirmed: chezmoi may read it differently from what Fleet sees.
         self.erase = erase
@@ -101,6 +110,9 @@ class Relay:
 
     def output(self, data):
         """Show chezmoi output. Replace a conflict menu with its explanation."""
+        now = time.monotonic()
+        for query, kind in QUERIES.items():
+            self.queries += [(kind, now)] * data.count(query)
         self.line += data
         while b"\n" in self.line:
             shown, self.line = self.line.split(b"\n", 1)
@@ -180,9 +192,25 @@ class Relay:
             # even one shaped like a cursor answer, such as Ctrl+F3 (ESC [ 1 ; 5 R).
             if self.menu is not None:
                 self.unconfirmed = True
-            elif not TERMINAL_ANSWER.fullmatch(self.sequence):
-                self.unconfirmed, self.ahead = True, True
+            elif not self.claims_query(self.sequence):
+                self.unconfirmed = True
+                self.ahead = True
         return True
+
+    def claims_query(self, sequence):
+        """Return True when SEQUENCE answers a query that chezmoi still waits for. Use it up.
+
+        Each query takes one answer, within ANSWER_WAIT seconds of being sent.
+        Ctrl+F3 sends ESC [ 1 ; 5 R, which looks like a cursor answer; it may use up the query,
+        and the real answer that follows then counts as typing.
+        """
+        now = time.monotonic()
+        self.queries = [(kind, sent) for kind, sent in self.queries if now - sent <= ANSWER_WAIT]
+        for index, (kind, _) in enumerate(self.queries):
+            if ANSWERS[kind].fullmatch(sequence):
+                del self.queries[index]
+                return True
+        return False
 
     def answered(self):
         if self.menu is None:

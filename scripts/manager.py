@@ -1310,8 +1310,10 @@ def every_run_scripts(managed):
     """
     try:
         entries = json.loads(managed or "{}")
-    except ValueError:
-        return set()
+    except ValueError as error:
+        raise ValueError(f"chezmoi managed printed data that is not JSON: {error}") from None
+    if not isinstance(entries, dict):
+        raise ValueError("chezmoi managed printed no table of scripts. Run update again.")
     return {
         target
         for target, entry in entries.items()

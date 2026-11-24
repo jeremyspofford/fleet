@@ -157,6 +157,27 @@ class ApplyTerminalTests(unittest.TestCase):
         self.assertEqual(self.records(), f"Skip-conflicts\t.a{TAIL}\n")
         self.assertEqual(self.status(), "MM .a\nMM .b\n")
 
+    def test_a_key_that_looks_like_an_answer_at_the_query_is_typing(self):
+        # Review F-080, B1: Ctrl+F3 (ESC[1;5R) arrives first and chezmoi takes it as its answer.
+        # The real answers then sit in the line, so chezmoi rejects S and asks again.
+        self.real_chezmoi(["a", "b"])
+        answers = b"\x1b[1;5R\x1b]11;rgb:0000/0000/0000\x1b\\\x1b[24;1R"
+        steps = [(b"\x1b[6n", answers, 0), (b"Choose [", b"S\r", 0), (b"Choose [", b"q\r", 0)]
+        code, output = self.run_apply(steps)
+        self.assertEqual(code, 0, output)
+        self.assertNotIn("Skip-conflicts", self.records())
+        kept, not_reviewed, _ = manager.sort_differences(self.status(), self.records())
+        self.assertEqual((kept, not_reviewed), ([".a"], [".b"]))
+
+    def test_a_late_answer_after_chezmoi_stopped_waiting_is_typing(self):
+        # Review F-080: chezmoi waits about 5 s. A later answer starts the next line it reads.
+        self.real_chezmoi(["a", "b"], [("run_before_wait.sh", "sleep 4\n")])
+        answers = b"\x1b]11;rgb:0000/0000/0000\x1b\\\x1b[24;1R"
+        steps = [(b"\x1b[6n", answers, 6.0), (b"Choose [", b"S\r", 0), (b"Choose [", b"q\r", 0)]
+        code, output = self.run_apply(steps)
+        self.assertEqual(code, 0, output)
+        self.assertNotIn("Skip-conflicts", self.records())
+
     def test_a_quiet_content_script_does_not_end_the_apply(self):
         self.real_chezmoi(["a"], [("run_before_quiet.sh", "sleep 2\n")])
         code, output = self.run_apply([(b"Choose [", b"s\r", 0)])
@@ -267,6 +288,12 @@ class ResolveTests(unittest.TestCase):
         kept, not_reviewed, others = manager.sort_differences(status, records, {"every.sh"})
         self.assertEqual((kept, not_reviewed, others), ([".a"], [], ["new.sh", "x.sh"]))
 
+    def test_unexpected_script_listings_fail_cleanly(self):
+        # Review F-080, follow-up 3: odd JSON stops the run with a clear error, never a crash.
+        for listing in ("[]", "null", "{not json"):
+            with self.subTest(listing=listing), self.assertRaises(ValueError):
+                manager.every_run_scripts(listing)
+
     def test_a_recorded_skip_all_keeps_every_file_and_a_question_mark_does_not(self):
         status = "MM .a\nMM .b\n"
         kept, not_reviewed, _ = manager.sort_differences(status, f"Skip-conflicts\t.a{TAIL}\n")
@@ -306,7 +333,7 @@ class DifferenceProblemTests(unittest.TestCase):
         text = manager.difference_problems([".b"], [], unconfirmed=True)
         self.assertIn("Unconfirmed: ~/.b. Fleet could not confirm an earlier answer.", text)
         self.assertIn("That answer may have kept these files.", text)
-        self.assertNotIn("stopped before", text)
+        self.assertNotIn("Not reviewed", text)
         text = manager.difference_problems([".b"], [".c"], unconfirmed=False)
         self.assertIn("Not reviewed: ~/.b. Fleet saw no answer for these local changes.", text)
         self.assertIn("Managed files still differ after the apply: ~/.c.", text)
