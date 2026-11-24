@@ -5,6 +5,7 @@ Usage: python3 -m unittest discover -s tests -v. No network connection is used.
 
 import contextlib
 import io
+from datetime import datetime, timedelta
 import json
 import os
 from pathlib import Path
@@ -35,12 +36,21 @@ class RemoteTests(unittest.TestCase):
         self.controller = self.base / "controller"
         self.controller.mkdir()
         atomic(self.controller / ".fleet/profile.toml", toml({"git_name": "Caller only"}))
-        saved = registry.load(self.home)["machines"][socket.gethostname()].copy()
-        saved.update(hostname="beelink", ssh_target="mini-pc")
+        own = registry.load(self.home)["machines"][socket.gethostname()]
+        saved = own.copy()
+        # The copy dates from one second before the target's own record. The target's record
+        # then wins at the first contact, even when its refresh falls in the same second.
+        earlier = datetime.fromisoformat(registry.fact_time(own)) - timedelta(seconds=1)
+        saved.update(hostname="beelink", ssh_target="mini-pc", recorded_at=earlier.isoformat())
         atomic(
             self.controller / registry.REGISTRY,
             registry.serialize({"schema_version": 1, "machines": {"beelink": saved}}),
         )
+        # The first contact renames the copy only when the stored copy is older than the
+        # target's stored record. Check both as the two registries hold them.
+        stored = registry.load(self.controller)["machines"]["beelink"]
+        target = registry.load(self.home)["machines"][socket.gethostname()]
+        self.assertLess(registry.fact_time(stored), registry.fact_time(target))
         target_env = self.base / "target-env.json"
         target_env.write_text(json.dumps(self.env))
         self.ssh_log = self.base / "ssh-log.jsonl"
