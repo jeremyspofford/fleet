@@ -448,6 +448,42 @@ class CaptureFinalTests(unittest.TestCase):
         self.assertIn("export LATER=1", self.published("packages/shell/.bashrc"))
         self.assertIn("x=1", self.published(".zshrc"))
 
+    def test_a_missing_name_or_email_is_supplied_separately(self):
+        # Review F-086: a global email without a name made git refuse the commit.
+        self.content_repository()
+        self.enroll(self.bare)
+        for present, missing in (("email", "name"), ("name", "email")):
+            with self.subTest(present=present):
+                config = self.base / f"global-{present}"
+                config.write_text(f"[user]\n\t{present} = only@example.invalid\n")
+                self.env["GIT_CONFIG_GLOBAL"] = str(config)
+                checkout = self.checkout()
+                for key in ("user.name", "user.email"):
+                    subprocess.run(["git", "-C", str(checkout), "config", "--unset-all", key])
+                line = f"original\n{present} only\n"
+                (self.home / ".file").write_text(line)
+                self.capture(".file")
+                local = subprocess.run(
+                    ["git", "-C", str(checkout), "config", "--local", f"user.{missing}"],
+                    capture_output=True,
+                    text=True,
+                ).stdout.strip()
+                self.assertTrue(local, f"user.{missing} was not supplied")
+                self.assertEqual(self.published(".file"), line)
+
+    def test_a_failed_commit_leaves_nothing_staged(self):
+        self.content_repository()
+        self.enroll(self.bare)
+        checkout = self.checkout()
+        hook = checkout / ".git/hooks/pre-commit"
+        hook.write_text("#!/bin/sh\necho 'commit refused by hook' >&2\nexit 1\n")
+        hook.chmod(0o755)
+        (self.home / ".file").write_text("original\nrefused commit\n")
+        output = self.capture(".file", expected=1)
+        self.assertIn("Could not commit the captured files. Nothing changed.", output)
+        self.assertEqual(self.git(checkout, "status", "--porcelain").strip(), "")
+        self.assertEqual((checkout / ".file").read_text(), "original\n")
+
     def test_a_not_own_capture_adds_the_final_newline_before_its_update(self):
         self.content_repository()
         self.enroll(self.content)

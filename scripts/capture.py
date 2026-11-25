@@ -291,10 +291,12 @@ def ensure_identity(checkout, profile):
 
     The profile's name and email come first. Fleet's own identity fills a gap.
     """
-    if git(checkout, "config", "user.email", check=False).stdout.strip():
-        return
-    git(checkout, "config", "user.name", profile.get("git_name") or "Fleet")
-    git(checkout, "config", "user.email", profile.get("git_email") or "dotfleet@localhost")
+    fallback = {"name": "Fleet", "email": "dotfleet@localhost"}
+    for key in ("name", "email"):
+        # Git needs both. Supply only the one that is missing, here or globally.
+        if not git(checkout, "config", f"user.{key}", check=False).stdout.strip():
+            value = profile.get(f"git_{key}") or fallback[key]
+            git(checkout, "config", f"user.{key}", value)
 
 
 def not_own(checkout, display, reason):
@@ -446,7 +448,13 @@ def run(home, names, display, update, confirm):
     machine = registry.machine_name(home)
     ensure_identity(checkout, profile)
     git(checkout, "add", "--", *(plan.content_name for plan in plans))
-    git(checkout, "commit", "-q", "-m", f"capture: {shown} from {machine}")
+    committed = git(checkout, "commit", "-q", "-m", f"capture: {shown} from {machine}", check=False)
+    if committed.returncode != 0:
+        # The checkout was clean at the start, so this puts back exactly what capture wrote.
+        git(checkout, "reset", "-q", "--hard", "HEAD")
+        print("Could not commit the captured files. Nothing changed.")
+        print(committed.stderr.decode(errors="replace").strip())
+        return 1
     print(f"Committed: capture: {shown} from {machine}")
     pushed = push(checkout, display, fetched)
     if pushed in ("unreachable", "moved"):
