@@ -212,6 +212,23 @@ class ApplyTerminalTests(unittest.TestCase):
         kept, not_reviewed, _ = manager.sort_differences(self.status(), self.records())
         self.assertEqual((kept, not_reviewed), ([".a"], [".b"]))
 
+    def test_an_echoed_answer_before_the_question_still_matches_the_re_ask(self):
+        # Review F-085: a script's cursor answer is echoed as ^[[24;1R in front of the first
+        # question. The re-asked question has no echo, so the texts differ; the files do not.
+        script = "printf 'x\\033[6n\\n'\nsleep 0.1\n"
+        self.real_chezmoi(["a", "b"], [("run_before_echo.sh", script)])
+        steps = [
+            (b"\x1b[6n", b"\x1b]11;rgb:0000/0000/0000\x1b\\\x1b[24;1R", 0),
+            (b"x\x1b[6n", b"\x1b[24;1R", 0),
+            (b"Choose [", b"S\r", 0),
+            (b"Choose [", b"q\r", 0),
+        ]
+        code, output = self.run_apply(steps)
+        self.assertEqual(code, 0, output)
+        self.assertNotIn("^[", self.records())
+        kept, not_reviewed, _ = manager.sort_differences(self.status(), self.records())
+        self.assertEqual((kept, not_reviewed), ([".a"], [".b"]))
+
     def test_a_cursor_answer_before_the_color_answer_cannot_become_skip_all(self):
         # Review F-083: chezmoi stops at the cursor answer, so the color answer joins S.
         self.real_chezmoi(["a", "b"])

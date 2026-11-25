@@ -59,6 +59,23 @@ ANSWER_WAIT = 5.0
 QUIET = 0.2
 
 
+# Escape sequences, and their echo in caret form such as ^[[24;1R, then control bytes.
+NOISE = re.compile(
+    r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b.?"
+    r"|\^\[\[[0-9;?]*[ -/]*[@-~]|\^\[\].*?(?:\^G|\^\[\\)|\^\[.?"
+    r"|[\x00-\x1f\x7f]"
+)
+
+
+def clean_question(question):
+    """Return chezmoi's question without echoed terminal answers or control bytes.
+
+    An echoed answer can land in front of the first question but not the re-asked one.
+    The cleaned text names the file in both, so the two compare equal.
+    """
+    return NOISE.sub("", question).strip()
+
+
 def resolve(answer, choices):
     """Return the menu word that chezmoi 2.74.1 reads ANSWER as, or None.
 
@@ -131,11 +148,12 @@ class Relay:
         clean = not self.ahead and not self.typed and not waiting
         # chezmoi asks the same question twice in a row only after d, or after it rejected the
         # line. A rejected line differs from what Fleet recorded, so that record is unsure.
-        if self.last and self.last[0] == found["question"] and self.last[1] not in ("diff", "?"):
-            self.record("?", found["question"])
-        self.menu = (found["question"], choices, clean)
+        question = clean_question(found["question"])
+        if self.last and self.last[0] == question and self.last[1] not in ("diff", "?"):
+            self.record("?", question)
+        self.menu = (question, choices, clean)
         self.line = b""
-        self.show(explain(found["question"], choices).replace("\n", "\r\n").encode())
+        self.show(explain(question, choices).replace("\n", "\r\n").encode())
 
     def flush_quiet(self):
         """Show a partial line after a quiet moment, such as a script's own prompt."""

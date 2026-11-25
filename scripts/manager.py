@@ -1329,6 +1329,7 @@ def sort_differences(status, choices, every_run=frozenset()):
     a tab, and chezmoi's question. EVERY_RUN names scripts that run on every apply.
     A first status column of M or D is a local change: an edit or a deletion.
     A local change counts as kept when chezmoi asked about it, or once the user pressed S.
+    A "?" record cancels S: Fleet cannot tell what chezmoi read, so later files are not kept.
     """
     records = [line.split("\t", 1) for line in choices.splitlines() if "\t" in line]
     # A "?" record means Fleet cannot tell what chezmoi read, so S may not have been pressed.
