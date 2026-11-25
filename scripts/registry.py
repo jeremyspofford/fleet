@@ -102,7 +102,7 @@ def load(home):
     return data
 
 
-def machine_name(home=None):
+def machine_name(home):
     """Return this machine's fleet name. The run index owns the rule; it runs before the manager.
 
     Pass the home you work on, so its saved name counts, not the current user's.
