@@ -226,10 +226,21 @@ class ApplyTerminalTests(unittest.TestCase):
         code, output = self.run_apply(steps)
         self.assertEqual(code, 0, output)
         self.assertIn(f"?\t.a{TAIL}", self.records())
-        # The first record keeps chezmoi's raw text, echo included, so .a is not matched as
-        # asked either. The run fails, which is safe (review F-092).
-        _, not_reviewed, _ = manager.sort_differences(self.status(), self.records())
-        self.assertIn(".b", not_reviewed)
+        # An echo is not text on the line, so the first record keeps chezmoi's raw question.
+        # The re-ask records "?", which turns S off. Its plain name marks .a as asked (F-095).
+        kept, not_reviewed, _ = manager.sort_differences(self.status(), self.records())
+        self.assertEqual((kept, not_reviewed), ([".a"], [".b"]))
+
+    def test_text_on_the_line_before_a_question_never_names_a_file(self):
+        # Review F-095: a script prints x, and chezmoi's question about .a joins it as x.a.
+        self.real_chezmoi(["a", "b", "x.a"], [("run_before_x.sh", "printf x\n")])
+        steps = [(b"Choose [", b"o\r", 0), (b"Choose [", b"q\r", 0)]
+        code, output = self.run_apply(steps)
+        self.assertEqual(code, 0, output)
+        self.assertNotIn(f"overwrite\tx.a{TAIL}", self.records())
+        kept, not_reviewed, _ = manager.sort_differences(self.status(), self.records())
+        self.assertNotIn(".x.a", kept)
+        self.assertIn(".x.a", not_reviewed)
 
     def test_a_plain_text_prefix_before_the_question_still_matches_the_re_ask(self):
         # Review F-092, blocker 1: the script prints "ready " right before the first question.
