@@ -191,6 +191,74 @@ class DotfilesOwnTests(unittest.TestCase):
         self.assertEqual(self.saved_source(), str(self.content))
 
 
+class RepointSafetyTests(unittest.TestCase):
+    """Review F-096: a bad new address must never move the remotes or follow upstream."""
+
+    setUp = DotfilesOwnTests.setUp
+    content_repository = DotfilesOwnTests.content_repository
+    manager_origin = DotfilesOwnTests.manager_origin
+    enroll = DotfilesOwnTests.enroll
+    git = DotfilesOwnTests.git
+    checkout = DotfilesOwnTests.checkout
+    remotes = DotfilesOwnTests.remotes
+    saved_source = DotfilesOwnTests.saved_source
+
+    def update(self):
+        result = subprocess.run(
+            [str(self.exe), "update"], env=self.env, cwd=self.home, text=True, capture_output=True
+        )
+        return result.returncode, result.stdout + result.stderr
+
+    def base_moves_on(self):
+        """The old base gets a new commit, which only merge-base may bring in."""
+        clone = self.base / "base-clone"
+        command("git", "clone", "-q", str(self.bare), str(clone))
+        (clone / ".zshrc").write_text(test_capture.ZSHRC + "export BASE_NEW=1\n")
+        identity = ["-c", "user.name=T", "-c", "user.email=t@example.invalid"]
+        self.git(clone, *identity, "commit", "-qam", "base change")
+        self.git(clone, "push", "-q", "origin", "HEAD:main")
+
+    def assert_nothing_moved(self, before, head, code, output):
+        self.assertNotEqual(code, 0, output)
+        self.assertNotIn("origin is now", output)
+        self.assertEqual(self.remotes(), before)
+        self.assertEqual(self.git(self.checkout(), "rev-parse", "HEAD").strip(), head)
+        self.assertEqual(self.saved_source(), str(self.bare))
+        self.assertNotIn("BASE_NEW", (self.home / ".zshrc").read_text())
+
+    def test_an_unreadable_address_keeps_the_old_source_and_fails(self):
+        self.content_repository()
+        self.enroll(self.bare)
+        before, head = self.remotes(), self.git(self.checkout(), "rev-parse", "HEAD").strip()
+        self.base_moves_on()
+        unreadable = self.base / "no-access.git"
+        test_command.CommandTests.cli(self, "dotfiles", "source", "--repo", str(unreadable))
+        code, output = self.update()
+        self.assertIn(f"Fleet could not read {unreadable}.", output)
+        self.assert_nothing_moved(before, head, code, output)
+
+    def test_an_address_with_other_history_keeps_the_old_source_and_fails(self):
+        self.content_repository()
+        self.enroll(self.bare)
+        before, head = self.remotes(), self.git(self.checkout(), "rev-parse", "HEAD").strip()
+        other = self.base / "other.git"
+        command("git", "init", "-q", "--bare", "-b", "main", str(other))
+        loose = self.base / "loose"
+        command("git", "init", "-q", "-b", "main", str(loose))
+        (loose / "unrelated").write_text("x\n")
+        identity = ["-c", "user.name=T", "-c", "user.email=t@example.invalid"]
+        self.git(loose, "add", "-A")
+        self.git(loose, *identity, "commit", "-qm", "unrelated")
+        self.git(loose, "push", "-q", str(other), "main")
+        test_command.CommandTests.cli(self, "dotfiles", "source", "--repo", str(other))
+        code, output = self.update()
+        self.assertIn(f"{other} does not hold this checkout's history.", output)
+        self.assert_nothing_moved(before, head, code, output)
+        # The old source still works, so the next update succeeds.
+        code, output = self.update()
+        self.assertEqual(code, 0, output)
+
+
 class SourceRequestTests(unittest.TestCase):
     """The remote request carries only a repository address."""
 
