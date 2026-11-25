@@ -111,7 +111,8 @@ DESCRIPTIONS = {
         "Download dotfiles repositories and choose the active one.\n"
         "Each download is a Git clone in ~/.fleet/dotfiles.\n"
         "Only the active repository is applied, updated, checked, and compared.\n"
-        "Downloading never activates a repository; use does, after a review."
+        "Downloading never activates a repository; use does, after a review.\n"
+        "Own makes the active repository yours; source moves content to a new address."
     ),
     "domain": (
         "Show or choose content additions.\n"
@@ -586,7 +587,12 @@ def prepare_manager(home, workspace):
 
 
 def update(home):
+    import dotfiles_own
+
     run_index.stage("check")
+    saved_profile = profile(home)
+    display = command_name(saved_profile)
+    dotfiles_own.repoint(home, saved_profile, display, lambda repo: save_source(home, repo))
     saved_profile = profile(home)
     if updates.check(home, saved_profile, display=False) == 2:
         return 2
@@ -1102,8 +1108,20 @@ def update_all(home, args, argument_parser):
 
 
 def dotfiles_command(home, args, display):
-    """Download, list, activate, or remove dotfiles repositories in ~/.fleet/dotfiles."""
+    """Download, list, activate, remove, own, or move dotfiles repositories in ~/.fleet/dotfiles."""
     library = dotfiles_library
+    if args.action == "own":
+        return own_dotfiles(home, display)
+    if args.action == "source":
+        try:
+            request = remote.profile_request("dotfiles", "source", {"repo": args.repo})
+        except ValueError as error:
+            raise ValueError(f"{args.repo} is not a Git address that Fleet accepts.") from error
+        result = save_remote_choice(home, request)
+        if result == 0:
+            print(f"The next update moves this checkout's origin to {args.repo}.")
+            print("The old address stays as upstream.")
+        return result
     if args.action == "download":
         name = library.download(home, args.url, args.name, manager.has_terminal())
         print(
@@ -1151,11 +1169,37 @@ def dotfiles_command(home, args, display):
     return manager.main(["--defaults", "--repo", repo, "--dotfiles", args.name], switch="use")
 
 
+def save_source(home, repo):
+    """Save REPO as this machine's content address. Return an exit code."""
+    changed = dict(profile(home), content_repo=repo)
+    with tempfile.TemporaryDirectory(prefix="dotfleet-profile-") as folder:
+        source = Path(folder) / "profile.toml"
+        atomic(source, toml(changed))
+        return transaction(home, [(PROFILE, source)], "Save the content source.")
+
+
+def own_dotfiles(home, display):
+    """Make the active content your own repository, then tell every reachable member."""
+    import dotfiles_own
+
+    def ask(label, default, choices, detail):
+        if not manager.has_terminal():
+            raise ValueError(f"Owning content needs a terminal. Run {display} dotfiles own there.")
+        return manager.ask(label, default, choices, detail=detail)
+
+    def send(member, repo):
+        request = remote.profile_request("dotfiles", "source", {"repo": repo})
+        return remote.execute(home, member, "dotfiles source", request=request)
+
+    return dotfiles_own.own(home, display, ask, lambda repo: save_source(home, repo), send)
+
+
 def remote_profile(home, args):
     """Send one profile choice to a registered machine. Its manager validates and saves it."""
     names = remote.PROFILE_ACTIONS[args.command][args.action]
     values = {"tool": getattr(args, "tool", None), "version": getattr(args, "version", None)}
     values.update(name=getattr(args, "name", None), state=getattr(args, "state", None))
+    values.update(repo=getattr(args, "repo", None))
     try:
         request = remote.profile_request(
             args.command,
@@ -1183,7 +1227,9 @@ def save_remote_choice(home, request):
     changed = copy.deepcopy(saved)
     failed = 0
     manifest = content_manifest(dotfiles_library.active(home))
-    if command == "domain":
+    if command == "dotfiles":
+        changed["content_repo"] = values["repo"]
+    elif command == "domain":
         require_domain(manifest, values["name"], display)
         changed.update(domain=values["name"], domain_chosen=True)
     elif command == "groups":

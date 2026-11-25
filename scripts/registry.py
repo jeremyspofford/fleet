@@ -736,6 +736,30 @@ def sync_own_version(home, manager_version):
     return True
 
 
+def record_content_source(home, repo):
+    """Set this machine's own record to the content address REPO. Return True on a change.
+
+    The change gets a new record time, so peers take it on the next digest exchange.
+    """
+    path = home / REGISTRY
+    if not path.is_file():
+        return False
+    own = machine_name(home)
+    descriptor = os.open(path.parent / ".fleet.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        data = load(home)
+        record = data["machines"].get(own)
+        if record is None or record.get("content_repo") == repo:
+            return False
+        record["content_repo"] = repo
+        record["recorded_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat(
+            timespec="seconds"
+        )
+        atomic(path, serialize(data))
+    return True
+
+
 def mark_removed(data, name, when=None):
     """Record that a machine left the fleet, and drop its record. The marker names its ID."""
     when = when or datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")

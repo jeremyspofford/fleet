@@ -444,6 +444,26 @@ Blocks of groups that this machine turns off stay in content.
 For native chezmoi content, run `chezmoi re-add FILE` instead.
 The terminal interface offers Capture under Configuration. It asks for the file in the terminal.
 
+## Your own content repository
+
+Many people start from another person's dotfiles repository. You cannot push there.
+`fleet dotfiles own` turns the active checkout into a repository of your own, with its whole history.
+
+1. Run `fleet dotfiles own`. If you can push to `origin`, it is already yours, and nothing changes.
+2. Choose where your repository lives, then press Enter:
+   - `g` creates it with `gh`, when `gh` is installed and signed in. Fleet asks for a name and a visibility. Private is preselected, because old history may hold secrets.
+   - `u` takes the address of an empty repository that you created.
+   - `c`, or Enter alone, cancels. Nothing changes.
+3. The old `origin` becomes `upstream`. Fleet pushes every branch and tag to the new `origin`.
+4. Fleet saves the new address as this machine's content source.
+5. Fleet sends the new address to each member it can reach. It prints a command for each member it cannot reach.
+
+If the push fails, Fleet puts the remotes back, and nothing changes.
+
+`fleet dotfiles source --repo URL` saves a new content address on one machine. Add `--machine NAME` for a member.
+At the next update, the checkout's `origin` moves to that address, and the old address stays as `upstream`.
+A checkout with unpushed commits, or with edited managed files, keeps its old address. Fleet says why.
+
 ## Store migration
 
 The installer and installed command move older stores into `~/.fleet` before other work:
