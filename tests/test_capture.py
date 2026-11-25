@@ -384,7 +384,7 @@ class CaptureFollowUpTests(unittest.TestCase):
         (self.home / ".file").write_text("original\ntwice\n")
         self.capture(".file", expected=1)
         output = test_command.CommandTests.cli(self, "capture", ".file", expected=1)
-        self.assertIn("~/.file already matches content.", output)
+        self.assertRegex(output, r"~/\.file already matches content\. Run (dot)?fleet update")
         self.git(self.checkout(), "checkout", "-q", "--detach")
         output = test_command.CommandTests.cli(self, "capture", ".file", expected=1)
         self.assertIn("The content checkout is not on a branch.", output)
@@ -405,6 +405,119 @@ class CaptureFollowUpTests(unittest.TestCase):
         self.assertEqual(
             (self.home / ".zshrc").read_text(), "export BASE=1\nexport ADDED=1\nexport MORE=1"
         )
+
+
+class CaptureFinalTests(unittest.TestCase):
+    """Review F-082: follow-ups 1-4."""
+
+    setUp = CaptureTests.setUp
+    terminal = CaptureTests.terminal
+    content_repository = CaptureTests.content_repository
+    manager_origin = CaptureTests.manager_origin
+    enroll = CaptureTests.enroll
+    home_env = CaptureTests.home_env
+    git = CaptureTests.git
+    published = CaptureTests.published
+    capture = CaptureTests.capture
+    checkout = CaptureFollowUpTests.checkout
+    other_clone = CaptureFollowUpTests.other_clone
+    push_from_other = CaptureFollowUpTests.push_from_other
+
+    def test_status_names_an_unpushed_commit_and_a_later_capture_rebases_it(self):
+        self.content_repository()
+        self.enroll(self.bare)
+        checkout = self.checkout()
+        self.git(checkout, "remote", "set-url", "origin", str(self.base / "gone.git"))
+        (self.home / ".file").write_text("original\nfirst\n")
+        self.capture(".file", expected=1)
+        status = test_command.CommandTests.cli(self, "status")
+        self.assertIn("1 content commit not pushed", status)
+        shown = "~/" + str(checkout.relative_to(self.home))
+        self.assertIn(f"git -C {shown} push origin HEAD", " ".join(status.split()))
+        # Origin answers again, and another machine has moved it meanwhile.
+        self.git(checkout, "remote", "set-url", "origin", str(self.bare))
+        self.push_from_other(lambda other: (other / ".zshrc").write_text(ZSHRC + "x=1\n"))
+        self.git(checkout, "fetch", "-q", "origin")
+        status = test_command.CommandTests.cli(self, "status")
+        self.assertIn("pull --rebase", status)
+        # A later capture rebases the local commit onto origin and pushes both.
+        (self.home / ".bashrc").write_text("export SHELL_LINE=1\nexport LATER=1\n")
+        output = self.capture(".bashrc", expected=None)
+        self.assertIn("Pushed to origin.", output)
+        self.assertEqual(self.published(".file"), "original\nfirst\n")
+        self.assertIn("export LATER=1", self.published("packages/shell/.bashrc"))
+        self.assertIn("x=1", self.published(".zshrc"))
+
+    def test_a_missing_name_or_email_is_supplied_separately(self):
+        # Review F-086: a global email without a name made git refuse the commit.
+        self.content_repository()
+        self.enroll(self.bare)
+        for present, missing in (("email", "name"), ("name", "email")):
+            with self.subTest(present=present):
+                config = self.base / f"global-{present}"
+                config.write_text(f"[user]\n\t{present} = only@example.invalid\n")
+                self.env["GIT_CONFIG_GLOBAL"] = str(config)
+                checkout = self.checkout()
+                for key in ("user.name", "user.email"):
+                    subprocess.run(
+                        ["git", "-C", str(checkout), "config", "--unset-all", key], env=self.env
+                    )
+                line = f"original\n{present} only\n"
+                (self.home / ".file").write_text(line)
+                self.capture(".file")
+                local = subprocess.run(
+                    ["git", "-C", str(checkout), "config", "--local", f"user.{missing}"],
+                    capture_output=True,
+                    text=True,
+                    env=self.env,
+                ).stdout.strip()
+                self.assertTrue(local, f"user.{missing} was not supplied")
+                self.assertEqual(self.published(".file"), line)
+
+    def test_a_failed_commit_leaves_nothing_staged(self):
+        self.content_repository()
+        self.enroll(self.bare)
+        checkout = self.checkout()
+        hook = checkout / ".git/hooks/pre-commit"
+        hook.write_text("#!/bin/sh\necho 'commit refused by hook' >&2\nexit 1\n")
+        hook.chmod(0o755)
+        # Origin is ahead, so capture fast-forwards before it commits (review F-090).
+        before = self.git(checkout, "rev-parse", "HEAD").strip()
+        self.push_from_other(lambda other: (other / ".zshrc").write_text(ZSHRC + "x=1\n"))
+        (self.home / ".file").write_text("original\nrefused commit\n")
+        output = self.capture(".file", expected=1)
+        self.assertIn("Could not commit the captured files. Nothing changed.", output)
+        self.assertEqual(self.git(checkout, "status", "--porcelain").strip(), "")
+        self.assertEqual((checkout / ".file").read_text(), "original\n")
+        # The checkout stays where it was, so the next update still brings the newer content.
+        self.assertEqual(self.git(checkout, "rev-parse", "HEAD").strip(), before)
+        hook.unlink()
+        (self.home / ".file").write_text("original\n")
+        test_command.CommandTests.cli(self, "update")
+        self.assertIn("x=1", (self.home / ".zshrc").read_text())
+
+    def test_a_not_own_capture_adds_the_final_newline_before_its_update(self):
+        self.content_repository()
+        self.enroll(self.content)
+        test_command.CommandTests.cli(self, "groups", "set", "--name", "extra", "--state", "off")
+        (self.home / ".zshrc").write_text("export BASE=1\nexport ADDED=1")
+        output = self.capture(".zshrc")
+        self.assertIn("origin is not a repository you can push to.", output)
+        self.assertEqual((self.home / ".zshrc").read_text(), "export BASE=1\nexport ADDED=1\n")
+        self.assertNotIn("Choose [", output)
+
+    def test_a_network_failure_after_a_good_fetch_is_unreachable(self):
+        self.content_repository()
+        self.enroll(self.bare)
+        hook = self.bare / "hooks/pre-receive"
+        hook.write_text(
+            "#!/bin/sh\necho 'ssh: connect to host git port 22: Connection refused' >&2\nexit 1\n"
+        )
+        hook.chmod(0o755)
+        (self.home / ".file").write_text("original\nnetwork\n")
+        output = self.capture(".file", expected=1)
+        self.assertIn("origin could not be reached.", output)
+        self.assertNotIn("not a repository you can push to", output)
 
 
 class AskFileTests(unittest.TestCase):

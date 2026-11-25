@@ -68,9 +68,9 @@ def complete_stage(home, name, facts=None):
     return stages
 
 
-def saved_name(home=None):
-    """Return the name saved in this machine's store, or an empty string."""
-    path = (Path.home() if home is None else home) / NAME_FILE
+def saved_name(home):
+    """Return the name saved in HOME's store, or an empty string."""
+    path = home / NAME_FILE
     try:
         name = path.read_text().strip() if path.is_file() and not path.is_symlink() else ""
     except OSError:
@@ -78,10 +78,8 @@ def saved_name(home=None):
     return name if NAME.fullmatch(name) else ""
 
 
-def machine_name(home=None):
-    """Return this machine's fleet name: the saved name, else its host name.
-
-    HOME is the home whose saved name counts; without one, the current user's home.
+def machine_name(home):
+    """Return this machine's fleet name: the saved name in HOME, else its host name.
 
     FLEET_MACHINE_NAME overrides both. It is for tests only.
     It lets two homes on one host act as two machines.
