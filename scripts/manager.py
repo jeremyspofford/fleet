@@ -26,6 +26,7 @@ import traceback
 import datetime
 import hashlib
 import json
+import contextlib
 import os
 from pathlib import Path
 import re
@@ -34,6 +35,7 @@ import shutil
 import store_migration
 import subprocess
 import sys
+import termios
 import ui_channel
 import tui_environment
 import tempfile
@@ -1218,9 +1220,14 @@ def wizard_catalog():
     return wizard.agent_manifest()
 
 
+def status_paths(status):
+    """Return the home-relative paths that a chezmoi status lists."""
+    return [line[3:] for line in status.splitlines() if len(line) > 3]
+
+
 def kept_files_message(status):
     """Name each differing file and the command that takes Fleet's version."""
-    paths = [line[3:] for line in status.splitlines() if len(line) > 3]
+    paths = status_paths(status)
     shown = ", ".join("~/" + path for path in paths)
     commands = " ".join("~/" + shlex.quote(path) for path in paths)
     return (
@@ -1229,6 +1236,120 @@ def kept_files_message(status):
         f"To take Fleet's version, run: chezmoi apply --force {commands}. "
         "This run's backup holds your edited copy."
     )
+
+
+def kept_by_you_message(paths):
+    """Name each file the user kept at the conflict prompt, and how to take Fleet's version."""
+    shown = ", ".join("~/" + path for path in paths)
+    commands = " ".join("~/" + shlex.quote(path) for path in paths)
+    return (
+        f"Kept by you: {shown}. Your local change stays, as you chose at the conflict prompt. "
+        f"To take Fleet's version, run: chezmoi apply --force {commands}. "
+        "Doctor shows this drift until the next update or that command. "
+        "This run's backup holds your copy."
+    )
+
+
+# chezmoi's conflict question: the relative path, then this tail.
+CONFLICT_TAIL = " has changed since chezmoi last wrote it"
+
+
+def difference_problems(not_reviewed, others, unconfirmed):
+    """Describe what still differs after an attended apply and fails the run, or return ""."""
+    shown = ", ".join
+    problems = []
+    if not_reviewed and unconfirmed:
+        # A "?" record: an answer that Fleet could not read safely. S may have been pressed.
+        problems.append(
+            f"Unconfirmed: {shown('~/' + path for path in not_reviewed)}. "
+            "Fleet could not confirm an earlier answer. That answer may have kept these files."
+        )
+    elif not_reviewed:
+        # After q, or an answer Fleet could not record, no answer covers these files.
+        problems.append(
+            f"Not reviewed: {shown('~/' + path for path in not_reviewed)}. "
+            "Fleet saw no answer for these local changes."
+        )
+    if others:
+        problems.append(
+            f"Managed files still differ after the apply: {shown('~/' + path for path in others)}. "
+            "The apply stopped before these files."
+        )
+    return " ".join(problems) + " Run update again to review them." if problems else ""
+
+
+@contextlib.contextmanager
+def terminal_restored(path="/dev/tty"):
+    """Restore the terminal's settings after the block, however the block ends."""
+    try:
+        descriptor = os.open(path, os.O_RDWR | os.O_NOCTTY)
+    except OSError:
+        yield
+        return
+    try:
+        saved = termios.tcgetattr(descriptor)
+    except termios.error:
+        os.close(descriptor)
+        yield
+        return
+    try:
+        yield
+    finally:
+        try:
+            termios.tcsetattr(descriptor, termios.TCSADRAIN, saved)
+        except termios.error:
+            pass
+        os.close(descriptor)
+
+
+def every_run_scripts(managed):
+    """Return the targets of scripts that run on every apply, from chezmoi managed JSON.
+
+    MANAGED is the output of chezmoi managed --include scripts --path-style all --format json.
+    A run_once_ or run_onchange_ script is left out: if it did not run, the run fails.
+    """
+    try:
+        entries = json.loads(managed or "{}")
+    except ValueError as error:
+        raise ValueError(f"chezmoi managed printed data that is not JSON: {error}") from None
+    if not isinstance(entries, dict):
+        raise ValueError("chezmoi managed printed no table of scripts. Run update again.")
+    return {
+        target
+        for target, entry in entries.items()
+        if Path(entry.get("sourceRelative", "")).name.startswith("run_")
+        and not Path(entry["sourceRelative"]).name.startswith(("run_once_", "run_onchange_"))
+    }
+
+
+def sort_differences(status, choices, every_run=frozenset()):
+    """Split what still differs after an attended apply into kept, not reviewed, and others.
+
+    STATUS is chezmoi status output. CHOICES holds apply_terminal.py's records: a menu word,
+    a tab, and chezmoi's question. EVERY_RUN names scripts that run on every apply.
+    A first status column of M or D is a local change: an edit or a deletion.
+    A local change counts as kept when chezmoi asked about it, or once the user pressed S.
+    A "?" record turns S off for every file. Files that chezmoi asked about stay kept.
+    """
+    records = [line.split("\t", 1) for line in choices.splitlines() if "\t" in line]
+    # A "?" record means Fleet cannot tell what chezmoi read, so S may not have been pressed.
+    unsure = any(key.strip() == "?" for key, _ in records)
+    skip_all = not unsure and any(key.strip() in ("S", "Skip-conflicts") for key, _ in records)
+    # chezmoi names the file, then adds this fixed tail. Strip only the tail.
+    asked = {prompt.removesuffix(CONFLICT_TAIL) for _, prompt in records}
+    kept, not_reviewed, others = [], [], []
+    for line in status.splitlines():
+        # A second-column R is a script. One that runs on every apply is no conflict.
+        if len(line) <= 3 or (line[1] == "R" and line[3:] in every_run):
+            continue
+        path = line[3:]
+        if line[0] not in "MD":
+            others.append(path)
+        elif skip_all or path in asked:
+            kept.append(path)
+        else:
+            not_reviewed.append(path)
+    return kept, not_reviewed, others
 
 
 def apply_confirmed_plan(
@@ -1299,7 +1420,13 @@ def apply_confirmed_plan(
     # Agent outputs first: earlier skill links must leave before content installs skill folders.
     agent_deploy.apply(home, plan["agents"], wizard_catalog(), account)
     account.confirm_files(fingerprint)
-    result = subprocess.run([bash(), str(ROOT / "scripts/apply.sh")])
+    choices = backup_path / "conflict-choices.txt"
+    # apply_terminal.py sets the terminal raw. Even a killed helper must leave it usable.
+    with terminal_restored():
+        result = subprocess.run(
+            [bash(), str(ROOT / "scripts/apply.sh")],
+            env={**os.environ, "FLEET_APPLY_CHOICES": str(choices)},
+        )
     account.confirm_files(fingerprint)
     if result.returncode:
         raise RuntimeError(
@@ -1308,8 +1435,22 @@ def apply_confirmed_plan(
     account.confirm_files(fingerprint)
     run_index.stage("verify")
     status = run("chezmoi", "status")
+    kept = set()
     if status.strip():
-        raise ValueError(kept_files_message(status))
+        # An unattended apply stops at any conflict, so a difference there is an error.
+        if not has_terminal():
+            raise ValueError(kept_files_message(status))
+        recorded = choices.read_text() if choices.is_file() else ""
+        listing = ["managed", "--include", "scripts", "--path-style", "all", "--format", "json"]
+        every_run = every_run_scripts(run("chezmoi", *listing))
+        kept_paths, not_reviewed, others = sort_differences(status, recorded, every_run)
+        kept = set(kept_paths)
+        if kept_paths:
+            warnings.append(kept_by_you_message(kept_paths))
+        unconfirmed = any(line.startswith("?\t") for line in recorded.splitlines())
+        problems = difference_problems(not_reviewed, others, unconfirmed)
+        if problems:
+            raise ValueError(problems)
     # Record the applied profile. A later saved-only change then triggers an update.
     record = json.loads((home / RECORD).read_text())
     record["profile_sha256"] = hashlib.sha256(
@@ -1317,13 +1458,19 @@ def apply_confirmed_plan(
     ).hexdigest()
     atomic(home / RECORD, json.dumps(record) + "\n")
     names = plan["names"] | set(plan["generated"])
-    atomic(
-        home / ".fleet/outputs.json",
-        json.dumps({name: fingerprint(home / name) for name in sorted(names)}, indent=2) + "\n",
-    )
+    # A kept file keeps the fingerprint Fleet last wrote. A later removal then sees the edit.
+    outputs = home / ".fleet/outputs.json"
+    previous = json.loads(outputs.read_text()) if outputs.is_file() else {}
+    inventory = {
+        name: previous[name] if name in kept else fingerprint(home / name)
+        for name in sorted(names)
+        if name not in kept or name in previous
+    }
+    atomic(outputs, json.dumps(inventory, indent=2) + "\n")
     if getattr(account, "first_enrollment", False):
         account.enrollment = verify_enrollment(home, profile)
-    return account.finish("SUCCESS", warnings, "CLEAN (no differences)")
+    after = f"{len(kept)} kept by you" if kept else "CLEAN (no differences)"
+    return account.finish("SUCCESS", warnings, after)
 
 
 def parse_arguments(argv):

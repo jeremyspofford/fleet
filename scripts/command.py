@@ -324,6 +324,14 @@ def checkout_state(path):
             "HEAD..." + ref.stdout.strip(),
         ).split()
         behind = f"{counts[1]} behind last fetched upstream"
+        ahead, late = int(counts[0]), int(counts[1])
+        if ahead:
+            # A capture that origin did not take leaves local commits. Name the next step.
+            plural = "commit" if ahead == 1 else "commits"
+            step = f"git -C {path} push origin HEAD"
+            if late:
+                step = f"git -C {path} pull --rebase, then {step}"
+            behind += f" · {ahead} content {plural} not pushed; run {step}"
     return f"{sha[:8]} · {behind} · " + ("local edits" if dirty else "clean")
 
 

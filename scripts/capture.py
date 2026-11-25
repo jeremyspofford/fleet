@@ -11,8 +11,10 @@ Usage: import this module from Fleet.
 Help: python3 scripts/capture.py --help.
 """
 
-# Exit codes: 0 when captured and updated, or cancelled; 1 when any file is refused, none
-#   is left to capture, origin changed during the review, or origin did not take the commit.
+# Exit codes: 0 when captured and updated, or when cancelled.
+#   1 when a file is refused, or none is left to capture.
+#   1 when the commit fails; the checkout is then put back.
+#   1 when origin changed during the review, or did not take the commit.
 #   Otherwise the update's own code.
 import collections
 import difflib
@@ -44,14 +46,18 @@ class Refused(ValueError):
 # One file to capture: its home path, content file, the content now, and the captured content.
 Plan = collections.namedtuple("Plan", "target content_name newest captured")
 # Push errors that mean origin did not answer, as opposed to refusing the push.
-UNREACHABLE = (
-    "could not read from remote",
-    "does not appear to be a git repository",
-    "unable to access",
+# A network failure says so plainly, even right after a fetch worked.
+NETWORK = (
     "could not resolve",
     "connection refused",
     "connection timed out",
     "network is unreachable",
+)
+# These also follow a refused login, so they mean unreachable only when this run's fetch failed.
+UNREACHABLE = (
+    "could not read from remote",
+    "does not appear to be a git repository",
+    "unable to access",
 )
 
 
@@ -165,7 +171,7 @@ def added_lines(before, after):
                 yield number + 1, new[number]
 
 
-def prepare(home, checkout, items, installed, newest, name, manifest, groups):
+def prepare(home, checkout, items, installed, newest, name, manifest, groups, display):
     """Return (content name, newest content, captured content) for one home file.
 
     INSTALLED is the content commit this machine applied; NEWEST is the commit to capture onto.
@@ -202,7 +208,9 @@ def prepare(home, checkout, items, installed, newest, name, manifest, groups):
             )
     shown_base = git(checkout, "show", f"{installed}:{content_name}", check=False)
     if shown_base.returncode != 0:
-        raise Refused(f"{shown} is not in the content this machine applied. Run update first.")
+        raise Refused(
+            f"{shown} is not in the content this machine applied. Run {display} update first."
+        )
     base = shown_base.stdout
     # Put the edit back into the full content file, with the blocks this machine omits.
     try:
@@ -219,7 +227,7 @@ def prepare(home, checkout, items, installed, newest, name, manifest, groups):
         if captured is None:
             raise Refused(f"{shown} conflicts with newer content. Nothing changed for it.")
     if captured == now:
-        raise Refused(f"{shown} already matches content. Run update to apply it.")
+        raise Refused(f"{shown} already matches content. Run {display} update to apply it.")
     return content_name, now, captured
 
 
@@ -279,6 +287,19 @@ def newest_commit(checkout):
     return (newest if behind else head), True
 
 
+def ensure_identity(checkout, profile):
+    """Give the checkout a Git identity when Git has none, so commits and rebases work.
+
+    The profile's name and email come first. Fleet's own identity fills a gap.
+    """
+    fallback = {"name": "Fleet", "email": "dotfleet@localhost"}
+    for key in ("name", "email"):
+        # Git needs both. Supply only the one that is missing, here or globally.
+        if not git(checkout, "config", f"user.{key}", check=False).stdout.strip():
+            value = profile.get(f"git_{key}") or fallback[key]
+            git(checkout, "config", f"user.{key}", value)
+
+
 def not_own(checkout, display, reason):
     print(reason)
     print(f"The commit stays in {checkout}.")
@@ -305,10 +326,20 @@ def push(checkout, display, fetched):
         return "pushed"
     reason = result.stderr.decode(errors="replace").lower()
     if "fetch first" in reason or "non-fast-forward" in reason:
-        print(f"origin has newer commits. The commit stays in {checkout}.")
-        print(f"Run git -C {checkout} pull --rebase, then git -C {checkout} push origin HEAD.")
+        # origin moved past the local commits. Replay them on top, then push again.
+        if git(checkout, "pull", "-q", "--rebase", "origin", check=False).returncode != 0:
+            git(checkout, "rebase", "--abort", check=False)
+            print(f"origin changed the same lines. The commit stays in {checkout}.")
+            print(f"Resolve it with git -C {checkout} pull --rebase, then push.")
+            return "moved"
+        if git(checkout, "push", "-q", "origin", "HEAD", check=False).returncode == 0:
+            print("Pushed to origin.")
+            print("Your commits now follow the newer commits that origin had.")
+            return "pushed"
+        print(f"origin changed again. The commit stays in {checkout}.")
         return "moved"
-    if not fetched and any(text in reason for text in UNREACHABLE):
+    network = any(text in reason for text in NETWORK)
+    if network or not fetched and any(text in reason for text in UNREACHABLE):
         print(f"origin could not be reached. The commit stays in {checkout}.")
         print(f"Run git -C {checkout} push origin HEAD when origin answers.")
         return "unreachable"
@@ -383,7 +414,7 @@ def run(home, names, display, update, confirm):
     for name in names:
         try:
             content_name, now, captured = prepare(
-                home, checkout, items, installed, newest, name, manifest, groups
+                home, checkout, items, installed, newest, name, manifest, groups, display
             )
             plans.append(Plan(destination(home, name), content_name, now, captured))
         except Refused as error:
@@ -408,6 +439,7 @@ def run(home, names, display, update, confirm):
             print(f"Run {display} capture again.")
             return 1
     # Only now does the checkout move: fast-forward to the content captured onto.
+    start = git(checkout, "rev-parse", "HEAD").stdout.decode().strip()
     git(checkout, "merge", "-q", "--ff-only", newest)
     for plan in plans:
         target = checkout / plan.content_name
@@ -416,18 +448,24 @@ def run(home, names, display, update, confirm):
         target.chmod(mode)
     shown = ", ".join(plan.target for plan in plans)
     machine = registry.machine_name(home)
-    identity = ["-c", f"user.name={profile.get('git_name') or 'Fleet'}"]
-    identity += ["-c", f"user.email={profile.get('git_email') or 'dotfleet@localhost'}"]
+    ensure_identity(checkout, profile)
     git(checkout, "add", "--", *(plan.content_name for plan in plans))
-    git(checkout, *identity, "commit", "-q", "-m", f"capture: {shown} from {machine}")
+    committed = git(checkout, "commit", "-q", "-m", f"capture: {shown} from {machine}", check=False)
+    if committed.returncode != 0:
+        # The checkout was clean at the start, so this puts it back exactly as it was. An update
+        # then still sees origin's newer commits and delivers them.
+        git(checkout, "reset", "-q", "--hard", start)
+        print("Could not commit the captured files. Nothing changed.")
+        print(committed.stderr.decode(errors="replace").strip())
+        return 1
     print(f"Committed: capture: {shown} from {machine}")
     pushed = push(checkout, display, fetched)
     if pushed in ("unreachable", "moved"):
         print("Fleet did not run the update, because origin did not take the commit.")
         print(f"Run {display} update after the push succeeds.")
         return 1
-    if pushed == "pushed":
-        end_with_newline(home, plans, manifest, groups)
+    # The update runs next, so the home file must already equal its rendering.
+    end_with_newline(home, plans, manifest, groups)
     if refused:
         # A refused file is still drift. The update would offer to overwrite it and show it.
         print("Fleet did not run the update, because a file was refused.")
