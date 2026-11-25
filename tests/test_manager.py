@@ -852,7 +852,10 @@ class EnrollmentTests(unittest.TestCase):
                 ]
                 before = path.read_bytes()
                 output = self.terminal(answers, configure=True, raw=True)
-                self.assertNotIn("\x1b[", output)
+                # chezmoi runs on its own terminal and asks it for its cursor position, as without
+                # Fleet. A terminal answers silently, and that query is not color.
+                plain = output.replace("\x1b[6n", "")
+                self.assertNotIn("\x1b[", plain)
                 self.assertIn("4. Choose your domain", output)
                 self.assertIn("Domain [core]:", output)
                 self.assertEqual(path.read_bytes(), before)
@@ -899,10 +902,17 @@ class EnrollmentTests(unittest.TestCase):
             path.write_bytes(path.read_bytes() + b"\n# local edit\n")
         edited = [path.read_bytes() for path in paths]
         prompt = b"Choose [d/o/a/s/S/q]:"
-        for answer in [b"S\n", b"q\n"]:
-            self.terminal([(prompt, answer)], expected=1)
-            self.assertEqual([path.read_bytes() for path in paths], edited)
-        self.terminal([(prompt, b"s\n"), (prompt, b"o\n")], expected=1)
+        # S keeps every conflicting file, and the run completes with a warning.
+        output = self.terminal([(prompt, b"S\n")], expected=0)
+        self.assertIn("Kept by you: ~/.aliases, ~/.bashrc.", output)
+        self.assertEqual([path.read_bytes() for path in paths], edited)
+        # q keeps the file it was asked about. The later edit was never reviewed, so the run fails.
+        output = self.terminal([(prompt, b"q\n")], expected=1)
+        self.assertIn("Kept by you: ~/.aliases.", output)
+        self.assertIn("Not reviewed: ~/.bashrc.", output)
+        self.assertEqual([path.read_bytes() for path in paths], edited)
+        output = self.terminal([(prompt, b"s\n"), (prompt, b"o\n")], expected=0)
+        self.assertIn("Kept by you: ~/.aliases.", output)
         self.assertEqual(paths[0].read_bytes(), edited[0])
         self.assertEqual(paths[1].read_bytes(), original[1])
         output = self.terminal([(prompt, b"x\n"), (prompt, b"d\n"), (prompt, b"o\n")])

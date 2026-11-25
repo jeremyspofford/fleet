@@ -3,7 +3,10 @@
 # Usage: bash scripts/apply.sh [-h|--help]
 # Parameters: -h/--help prints help; other arguments are invalid.
 # Example: bash scripts/apply.sh
-# Exit codes: 0 success/help; 1 apply failure; 2 invalid arguments.
+# Exit codes: 0 success or help; 2 invalid arguments.
+#   Without a terminal: 1 when the apply stops at a conflict or fails.
+#   In a terminal: apply_terminal.py's code: chezmoi's own code, 128 plus a signal number,
+#   or 1 when the helper itself fails.
 # Author: Jeremy Spofford / Aria Labs; Version: read from ../VERSION.
 set -euo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -26,79 +29,11 @@ if [[ $# -gt 0 ]]; then
 		;;
 	esac
 fi
-# Change only the displayed menu. chezmoi still detects conflicts and handles choices.
-# Its --no-tty mode reads full lines from our terminal descriptor, never piped stdin.
-show_apply_output() {
-	local char line='' choices suffix message
-	while IFS= read -r -n 1 char; do
-		if [[ -z $char ]]; then
-			log_info "$line"
-			line=''
-			continue
-		fi
-		line+=$char
-		# Current and older chezmoi versions differ in their skip-all option.
-		# Directory conflicts have no diff choice.
-		for choices in \
-			'diff/overwrite/all-overwrite/skip/Skip-conflicts/quit' \
-			'overwrite/all-overwrite/skip/Skip-conflicts/quit' \
-			'diff/overwrite/all-overwrite/skip/quit' \
-			'overwrite/all-overwrite/skip/quit' \
-			'diff/yes/no/all/quit' \
-			'yes/no/all/quit'; do
-			suffix=" ($choices)? "
-			if [[ $line != *"$suffix" ]]; then continue; fi
-			message=${line%"$suffix"}
-			log_info ''
-			log_info 'File conflict'
-			log_info '-------------'
-			log_info "$message."
-			log_info 'Type one letter, then press Enter. Enter alone asks again.'
-			if [[ $choices == */Skip-conflicts/* ]]; then log_info 'Uppercase S differs from lowercase s.'; fi
-			log_info ''
-			if [[ $choices == diff/* ]]; then log_info '  d  Show changes for this file, then ask again.'; fi
-			if [[ $choices == *yes/no/all/quit ]]; then
-				log_info '  y  Apply the proposed change to this file.'
-				log_info '  n  Keep this file unchanged; continue with other files. Recommended if unsure.'
-				log_info '  a  Apply remaining changes, but still ask about conflicts.'
-			else
-				log_info '  o  Overwrite this file with the generated version.'
-				log_info '  a  Overwrite this file and all remaining conflicts without asking again.'
-				log_info '  s  Keep this file unchanged; continue with other files. Recommended if unsure.'
-				if [[ $choices == */Skip-conflicts/* ]]; then
-					log_info '  S  Keep all conflicting files unchanged; apply other changes.'
-				fi
-			fi
-			log_info '  q  Stop applying. Changes already made remain in place.'
-			choices=${choices//diff/d}
-			choices=${choices//all-overwrite/a}
-			choices=${choices//overwrite/o}
-			choices=${choices//Skip-conflicts/S}
-			choices=${choices//skip/s}
-			choices=${choices//quit/q}
-			choices=${choices//yes/y}
-			choices=${choices//no/n}
-			choices=${choices//all/a}
-			log_info ''
-			log_info "Choose [$choices]:"
-			line=''
-			break
-		done
-		# Do not hide an unfamiliar prompt from a newer chezmoi or custom template.
-		if [[ $line == *'? ' ]]; then
-			log_info "$line"
-			log_info 'Type your answer, then press Enter.'
-			line=''
-		fi
-	done
-	if [[ -n $line ]]; then log_info "$line"; fi
-}
-
 log_info "Applying managed files"
-if [[ ${FLEET_REMOTE_RUN:-0} != 1 ]] && { exec 3<>/dev/tty; } 2>/dev/null; then
-	# A plain line prompt also lets users correct input before pressing Enter.
-	chezmoi --no-tty --no-pager apply <&3 | show_apply_output
-	exec 3>&-
+if [[ ${FLEET_REMOTE_RUN:-0} != 1 ]] && { : </dev/tty; } 2>/dev/null; then
+	# chezmoi runs on its own pseudo-terminal, so content scripts read input as without Fleet.
+	# The helper explains each conflict menu and records only the answers to those menus.
+	exec python3 "$SCRIPT_DIR/apply_terminal.py"
 else
 	# Unattended runs must never guess how to resolve a local edit.
 	if ! chezmoi --no-tty --error-on-conflict apply </dev/null; then
