@@ -600,7 +600,8 @@ def update(home):
     run_index.stage("check")
     saved_profile = profile(home)
     display = command_name(saved_profile)
-    dotfiles_own.repoint(home, saved_profile, display, lambda repo: save_source(home, repo))
+    if not dotfiles_own.repoint(home, saved_profile, display, lambda repo: save_source(home, repo)):
+        return 1
     saved_profile = profile(home)
     if updates.check(home, saved_profile, display=False) == 2:
         return 2

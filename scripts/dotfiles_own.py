@@ -1,7 +1,7 @@
 """Make the active content your own repository, and move content to a new address.
 
-Internal API: own(home, display, ask, save_source, send); source(home, repo, display, save);
-repoint(home, profile, display, save).
+Internal API: own(home, display, ask, save_source, send);
+repoint(home, profile, display, save), which returns True when the update may go on.
 Own checks origin first. When you can push there, it is already yours.
 Otherwise you choose: g creates a repository with gh, u takes an address you type, c cancels.
 The old origin becomes upstream, and every branch and tag goes to the new origin.
@@ -152,23 +152,26 @@ def own(home, display, ask, save_source, send):
     registry.record_content_source(home, address)
     missed = [name for name in members(home) if send(name, address) != 0]
     for name in missed:
-        print(
-            f"Could not reach {name}. Run {display} dotfiles source --repo {address} --machine {name}"
-        )
+        print(f"Could not reach {name}. Run this when it is reachable:")
+        print(f"  {display} dotfiles source --repo {address} --machine {name}")
     return 0
 
 
 def repoint(home, profile, display, save):
     """Move the checkout's origin to the saved content address, keeping the old one as upstream.
 
+    Return True when the update may go on, False when it must stop.
     A checkout with unpushed commits, or with uncommitted edits to managed files, keeps its old
-    source. Fleet then saves the old address back with SAVE(repo) and says why.
+    source; the update goes on with it. An address that cannot be read, or that does not hold
+    this checkout's history, also keeps the old source, and the update stops. Before any remote
+    moves, Fleet reads the new address; after a failed move, it puts every remote back.
+    SAVE(repo) saves the old address back.
     """
     checkout = dotfiles_library.active(home, profile)
     wanted = profile.get("content_repo", "")
     current = remote_url(checkout, "origin")
     if not wanted or not current or wanted in (current, str(checkout)):
-        return
+        return True
     reason = ""
     upstream = git(checkout, "rev-parse", "-q", "--verify", "@{upstream}", check=False)
     if upstream.returncode == 0:
@@ -181,17 +184,49 @@ def repoint(home, profile, display, save):
         print(f"Fleet keeps the old content source, because {reason}.")
         print(f"Push or commit them, then run {display} dotfiles source --repo {wanted} again.")
         save(current)
-        return
-    if remote_url(checkout, "upstream"):
-        git(checkout, "remote", "set-url", "origin", wanted)
-    else:
-        git(checkout, "remote", "rename", "origin", "upstream")
-        git(checkout, "remote", "add", "origin", wanted)
-    git(checkout, "fetch", "-q", "origin", check=False)
-    branch = git(checkout, "symbolic-ref", "--short", "HEAD", check=False).stdout.strip()
-    if branch:
-        git(checkout, "branch", "-q", "--set-upstream-to", f"origin/{branch}", check=False)
+        return True
+
+    def keep(problem):
+        print(problem)
+        print("Fleet keeps the old content source. Nothing changed.")
+        print(f"Fix the address, then run {display} dotfiles source --repo URL again.")
+        save(current)
+        return False
+
+    branch = git(checkout, "symbolic-ref", "-q", "--short", "HEAD", check=False).stdout.strip()
+    # Read the new address first. No remote changes until it holds this checkout's history.
+    if git(checkout, "fetch", "-q", wanted, branch or "HEAD", check=False).returncode != 0:
+        return keep(f"Fleet could not read {wanted}.")
+    contains = git(checkout, "merge-base", "--is-ancestor", "HEAD", "FETCH_HEAD", check=False)
+    if contains.returncode:
+        return keep(f"{wanted} does not hold this checkout's history.")
+    saved = {
+        key: git(checkout, "config", "--get", f"branch.{branch}.{key}", check=False).stdout.strip()
+        for key in ("remote", "merge")
+    }
+    had_upstream = bool(remote_url(checkout, "upstream"))
+    undo = []
+    try:
+        if had_upstream:
+            git(checkout, "remote", "set-url", "origin", wanted)
+            undo.append(("remote", "set-url", "origin", current))
+        else:
+            git(checkout, "remote", "rename", "origin", "upstream")
+            undo.append(("remote", "rename", "upstream", "origin"))
+            git(checkout, "remote", "add", "origin", wanted)
+            undo.append(("remote", "remove", "origin"))
+        git(checkout, "fetch", "-q", "origin")
+        if branch:
+            git(checkout, "branch", "-q", "--set-upstream-to", f"origin/{branch}")
+    except subprocess.CalledProcessError:
+        for step in reversed(undo):
+            git(checkout, *step, check=False)
+        for key, value in saved.items():
+            if value:
+                git(checkout, "config", f"branch.{branch}.{key}", value, check=False)
+        return keep(f"Fleet could not move origin to {wanted}.")
     print(f"Content source: origin is now {wanted}. The old origin is now upstream.")
+    return True
 
 
 def usage():
