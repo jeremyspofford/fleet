@@ -436,7 +436,7 @@ class FleetApp(App[str]):
         self.push_screen(AreaScreen(event.option.id))
 
     async def open_command(self, action):
-        if action in ("configure", "machine-install", "capture"):
+        if action in ("configure", "machine-install", "capture", "dotfiles-own"):
             # Each needs the real terminal: the wizard and capture read it directly.
             await self.leave(action)
         else:
@@ -592,6 +592,10 @@ def main(argv=None):
         return 0
     app = FleetApp()
     result = app.run()
+    if result == "dotfiles-own":
+        import command
+
+        return style.run_cli(lambda: command.main(["dotfiles", "own"]), ROOT)
     if result == "capture":
         import capture
         import command

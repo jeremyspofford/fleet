@@ -86,6 +86,13 @@ GROUPS = {
     },
     "addons": {"list": "List installed add-on records.\nNo add-ons ship with Fleet."},
     "dotfiles": {
+        "own": "Make the active content your own repository.\n"
+        "Choose g to create one with gh, u to type an address, or c to cancel.\n"
+        "The old origin becomes upstream, and every branch and tag goes to the new origin.\n"
+        "Each reachable member then gets the new address.",
+        "source": "Save a new content address.\n"
+        "The next update moves the checkout's origin there and keeps the old one as upstream.\n"
+        "Unpushed commits or edited managed files keep the old address.",
         "download": "Download a dotfiles repository into ~/.fleet/dotfiles.\n"
         "Downloading never activates it and changes no applied file.\n"
         "Without --name, the repository's name names the download.",
@@ -100,7 +107,7 @@ GROUPS = {
 }
 
 EXAMPLES = {
-    "dotfiles": "dotfiles list; dotfiles download https://github.com/example/dotfiles; dotfiles download https://github.com/example/dotfiles --name work; dotfiles use work; dotfiles remove default",
+    "dotfiles": "dotfiles list; dotfiles download https://github.com/example/dotfiles; dotfiles download https://github.com/example/dotfiles --name work; dotfiles use work; dotfiles remove default; dotfiles own; dotfiles source --repo https://github.com/example/dotfiles; dotfiles source --repo https://github.com/example/dotfiles --machine lab",
     "marketplaces": "marketplaces list; marketplaces add --source https://github.com/example/agent-market; marketplaces add --source URL --packages review-kit; marketplaces add --source URL --features review-kit/mcp.docs; marketplaces update; marketplaces update --name agent-market --pin v1.2.0; marketplaces update --name agent-market --unpin; marketplaces delete --name agent-market",
     "agents": "agents import --agent claude; agents list; agents set --name mcp.docs --state off; agents set --name mcp.docs --state local",
     "logs": "logs list; logs list --limit 10; logs show; logs show --name BACKUP; logs show --json",
@@ -289,6 +296,8 @@ def add_action_parameters(parser, name, action):
         parser.add_argument("--name", help="download name; default: the repository's name")
     elif name == "dotfiles" and action in ("use", "remove"):
         parser.add_argument("name", help="download from dotfiles list")
+    elif name == "dotfiles" and action == "source":
+        parser.add_argument("--repo", required=True, help="Git address of the content repository")
     elif name == "domain" and action == "set":
         parser.add_argument("--name", required=True, help="domain from domain list")
     elif name == "groups" and action == "set":

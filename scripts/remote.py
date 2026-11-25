@@ -26,6 +26,7 @@ CAPABLE = ("status", "check", "diff", "doctor", "update")
 PROFILE_ACTIONS = {
     "agents": {"list": (), "set": ("name", "state")},
     "domain": {"list": (), "set": ("name",)},
+    "dotfiles": {"source": ("repo",)},
     "groups": {"list": (), "set": ("name", "state")},
     "tools": {
         "list": (),
@@ -45,6 +46,8 @@ PATTERNS = {
     ("groups", "state"): r"on|off",
     ("tools", "tool"): r"[A-Za-z0-9][A-Za-z0-9:._@/-]*",
     ("tools", "version"): r"[A-Za-z0-9][A-Za-z0-9._+-]*",
+    # A Git address: https, ssh, scp-style git@, or an absolute local path. No shell text.
+    ("dotfiles", "repo"): r"(?:https://|ssh://|git@)[A-Za-z0-9._~@:/+-]+|/[A-Za-z0-9._~/+-]+",
 }
 CONTEXT = "FLEET_REMOTE_RUN"
 REASONS = {
@@ -71,7 +74,9 @@ def validate_profile_request(request):
         raise ValueError("Invalid remote request. Update Fleet on both machines.")
     command, action, arguments = request["command"], request["action"], request["arguments"]
     if command not in PROFILE_ACTIONS or action not in PROFILE_ACTIONS.get(command, {}):
-        raise ValueError("Only domain, groups, agents, and tools choices can change remotely.")
+        raise ValueError(
+            "Only domain, groups, agents, tools, and dotfiles source choices can change remotely."
+        )
     expected = set(PROFILE_ACTIONS[command][action])
     required = expected - OPTIONAL.get((command, action), set())
     if not isinstance(arguments, dict) or not required <= set(arguments) <= expected:

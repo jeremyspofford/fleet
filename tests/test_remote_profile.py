@@ -19,7 +19,7 @@ class RemoteProfileRequestTests(unittest.TestCase):
         request = remote.profile_request("domain", "set", {"name": "work"})
         self.assertEqual(request["version"], 2)
         for command, action, arguments, message in [
-            ("configure", "set", {}, "Only domain, groups, agents, and tools"),
+            ("configure", "set", {}, "Only domain, groups, agents, tools, and dotfiles source"),
             ("domain", "remove", {"name": "work"}, "Only domain"),
             ("domain", "set", {"name": "work", "extra": "x"}, "Invalid values"),
             ("domain", "set", {"name": "work; rm -rf ~"}, "Invalid name"),
@@ -47,6 +47,14 @@ class RemoteProfileTests(unittest.TestCase):
 
     def target_profile(self):
         return tomllib.loads((self.home / ".fleet/profile.toml").read_text())
+
+    def test_a_remote_content_source_is_saved_on_the_target(self):
+        # fleet dotfiles own sends this to each reachable member.
+        self.connect()
+        new = str(self.base / "mine.git")
+        output = self.call("dotfiles", "source", "--repo", new, "--machine", "beelink")
+        self.assertIn("dotfiles source succeeded (exit 0).", output)
+        self.assertEqual(self.target_profile()["content_repo"], new)
 
     def test_remote_domain_assignment_saves_then_the_next_update_applies_it(self):
         self.connect()

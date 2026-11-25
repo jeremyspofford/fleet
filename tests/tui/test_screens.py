@@ -494,6 +494,16 @@ class ScreenTests(unittest.IsolatedAsyncioTestCase):
             await self.open_command(pilot, app, "configure")
         self.assertEqual(app.return_value, "configure")
 
+    async def test_dotfiles_own_leaves_for_the_terminal(self):
+        # Own asks where your repository lives, on the real terminal.
+        app = FleetApp(FixtureSession())
+        async with app.run_test() as pilot:
+            await self.settle(pilot, app)
+            # It sits under Dotfiles, not in an area menu, so open it directly.
+            await app.open_command("dotfiles-own")
+            await pilot.pause()
+        self.assertEqual(app.return_value, "dotfiles-own")
+
     async def test_capture_leaves_for_the_terminal(self):
         # Capture asks for a file and a typed confirmation on the real terminal.
         app = FleetApp(FixtureSession())

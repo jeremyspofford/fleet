@@ -73,6 +73,8 @@ The command audit uses these forms:
 | topology | --json selects structured output |
 | content | No value parameters |
 | capture | One or more FILE paths |
+| dotfiles own | No value parameters |
+| dotfiles source | --repo; --machine selects a registered machine |
 | tools list | --machine selects a registered machine |
 | machines list, backups list, secrets list, addons list | No value parameters |
 | logs list | --limit |

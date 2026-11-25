@@ -156,6 +156,17 @@ def marketplace_delete_arguments(home):
     return ["marketplaces", "delete", "--name", selected] if selected is not None else None
 
 
+def dotfiles_source_arguments(home):
+    answer = form(
+        "Move content to a new address",
+        [field("repo", "Git address of the content repository")],
+        "The next update moves origin there and keeps the old one as upstream. Cancel stops.",
+    )
+    if answer is None:
+        return None
+    return ["dotfiles", "source", "--repo", answer["repo"].strip()]
+
+
 def dotfiles_download_arguments(home):
     answer = form(
         "Download a dotfiles repository",
@@ -291,6 +302,7 @@ FORMS = {
     "dotfiles-download": dotfiles_download_arguments,
     "dotfiles-use": dotfiles_use_arguments,
     "dotfiles-remove": dotfiles_remove_arguments,
+    "dotfiles-source": dotfiles_source_arguments,
     "marketplace-delete": marketplace_delete_arguments,
     "pin-set": pin_arguments,
     "pin-remove": unpin_arguments,
