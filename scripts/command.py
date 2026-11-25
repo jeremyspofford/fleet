@@ -112,7 +112,8 @@ DESCRIPTIONS = {
         "Each download is a Git clone in ~/.fleet/dotfiles.\n"
         "Only the active repository is applied, updated, checked, and compared.\n"
         "Downloading never activates a repository; use does, after a review.\n"
-        "Own makes the active repository yours; source moves content to a new address."
+        "Own makes the active repository yours; source moves content to a new address.\n"
+        "Merge-base brings the base repository's new commits into yours, after a review."
     ),
     "domain": (
         "Show or choose content additions.\n"
@@ -1112,6 +1113,10 @@ def dotfiles_command(home, args, display):
     library = dotfiles_library
     if args.action == "own":
         return own_dotfiles(home, display)
+    if args.action == "merge-base":
+        import dotfiles_own
+
+        return dotfiles_own.merge_base(home, display, confirm, profile(home))
     if args.action == "source":
         try:
             request = remote.profile_request("dotfiles", "source", {"repo": args.repo})

@@ -1,7 +1,7 @@
 """Make the active content your own repository, and move content to a new address.
 
-Internal API: own(home, display, ask, save_source, send); source(home, repo, display, save);
-repoint(home, profile, display, save).
+Internal API: own(home, display, ask, save_source, send);
+merge_base(home, display, confirm, profile); repoint(home, profile, display, save).
 Own checks origin first. When you can push there, it is already yours.
 Otherwise you choose: g creates a repository with gh, u takes an address you type, c cancels.
 The old origin becomes upstream, and every branch and tag goes to the new origin.
@@ -13,8 +13,10 @@ Usage: import this module from Fleet.
 Help: python3 scripts/dotfiles_own.py --help.
 """
 
-# Exit codes: 0 when the content is yours, was already yours, or the choice was cancelled.
-#   1 when the push to the new repository fails; nothing changes then.
+# Exit codes: own returns 0 when the content is yours, was already yours, or was cancelled.
+#   Own returns 1 when the push to the new repository fails; nothing changes then.
+#   Merge-base returns 0 when merged, when nothing is new, or when cancelled.
+#   Merge-base returns 1 on a conflict, a failed fetch, or no upstream; nothing changes then.
 import os
 from pathlib import Path
 import shutil
@@ -155,6 +157,75 @@ def own(home, display, ask, save_source, send):
         print(
             f"Could not reach {name}. Run {display} dotfiles source --repo {address} --machine {name}"
         )
+    return 0
+
+
+def merge_base(home, display, confirm, profile):
+    """Merge the base repository's new commits into your own, then push to origin.
+
+    CONFIRM(word, explanation) asks for the typed word. Updates never do this (ruling 7).
+    A conflict names each file and changes nothing: Fleet tests the merge before it starts.
+    """
+    checkout = dotfiles_library.active(home, profile)
+    if not remote_url(checkout, "upstream"):
+        print("This content has no upstream.")
+        print(f"It gets one when {display} dotfiles own makes the content yours.")
+        return 1
+    branch = git(checkout, "symbolic-ref", "-q", "--short", "HEAD", check=False).stdout.strip()
+    if not branch:
+        print(f"The content checkout is not on a branch. Run git -C {checkout} switch BRANCH.")
+        return 1
+    if git(checkout, "status", "--porcelain").stdout.strip():
+        print(f"The content checkout has uncommitted edits: {checkout}. Nothing changed.")
+        return 1
+    if git(checkout, "fetch", "-q", "upstream", check=False).returncode != 0:
+        print("Could not fetch upstream. Nothing changed.")
+        return 1
+    base = f"upstream/{branch}"
+    if git(checkout, "rev-parse", "-q", "--verify", base, check=False).returncode != 0:
+        print(f"upstream has no branch {branch}. Nothing changed.")
+        return 1
+    count = int(git(checkout, "rev-list", "--count", f"HEAD..{base}").stdout.strip())
+    if not count:
+        print("Nothing new in upstream.")
+        return 0
+    # Try the merge in memory. The checkout does not move unless the merge is clean.
+    trial = git(checkout, "merge-tree", "--write-tree", "--name-only", "HEAD", base, check=False)
+    lines = trial.stdout.splitlines()
+    if trial.returncode != 0:
+        files = []
+        for line in lines[1:]:
+            if not line:
+                break
+            files.append(line)
+        print(f"These files conflict with upstream: {', '.join(files)}. Nothing changed.")
+        print(f"Resolve them with git in {checkout}, or keep your version.")
+        return 1
+    tree = lines[0]
+    plural = "commit" if count == 1 else "commits"
+    print(f"{count} new {plural} in upstream would change these content files:")
+    print(git(checkout, "diff", "--no-color", "--stat", "HEAD", tree).stdout, end="")
+    print(git(checkout, "diff", "--no-color", "HEAD", tree).stdout, end="")
+    if not confirm("merge", "Merge these upstream commits into your content, then push."):
+        print("Cancelled. Nothing changed.")
+        return 0
+    import capture
+
+    capture.ensure_identity(checkout, profile)
+    message = f"merge-base: {base} into {branch}"
+    merged = git(checkout, "merge", "-q", "--no-ff", "-m", message, base, check=False)
+    if merged.returncode != 0:
+        git(checkout, "merge", "--abort", check=False)
+        print("The merge did not complete. Nothing changed.")
+        print(merged.stderr.strip())
+        return 1
+    print(f"Merged {count} upstream {plural}.")
+    if git(checkout, "push", "-q", "origin", "HEAD", check=False).returncode == 0:
+        print("Pushed to origin.")
+    else:
+        print(f"origin did not take the merge. The commit stays in {checkout}.")
+        print(f"Run git -C {checkout} push origin HEAD when origin answers.")
+    print(f"Run {display} update to apply it on this machine.")
     return 0
 
 
