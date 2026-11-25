@@ -178,6 +178,59 @@ class ApplyTerminalTests(unittest.TestCase):
         self.assertEqual(code, 0, output)
         self.assertNotIn("Skip-conflicts", self.records())
 
+    def assert_skip_all_not_trusted(self):
+        """The first answer joined other bytes; chezmoi asked again, so .b counts as unasked."""
+        self.assertIn(f"?\t.a{TAIL}", self.records())
+        kept, not_reviewed, _ = manager.sort_differences("MM .a\nMM .b\n", self.records())
+        self.assertEqual((kept, not_reviewed), ([".a"], [".b"]))
+
+    def test_answers_that_chezmoi_stopped_waiting_for_join_the_next_line(self):
+        # Review F-083, timer edge: chezmoi gave up on its queries, so their answers reach S.
+        self.fake_chezmoi(
+            "printf '\\033]11;?\\033\\\\\\033[6n'\nsleep 0.5\nprintf '\\n'\n"
+            f"for i in 1 2; do printf '.a{TAIL} {MENU}'; IFS= read -r line\n"
+            '  [ "$line" = S ] && exit 0; [ "$line" = q ] && exit 0; done\n'
+        )
+        answers = b"\x1b]11;rgb:0000/0000/0000\x1b\\\x1b[24;1R"
+        steps = [(b"\x1b[6n", answers, 0), (b"Choose [", b"S\r", 0), (b"Choose [", b"q\r", 0)]
+        code, output = self.run_apply(steps)
+        self.assertEqual(code, 0, output)
+        self.assert_skip_all_not_trusted()
+
+    def test_a_scripts_own_cursor_query_cannot_turn_its_answer_into_skip_all(self):
+        # Review F-083: a run_before_ script asks for the cursor, and chezmoi never reads it.
+        self.real_chezmoi(["a", "b"], [("run_before_ask.sh", "printf '\\033[6n'\nsleep 1\n")])
+        steps = [
+            (b"\x1b[6n", b"\x1b]11;rgb:0000/0000/0000\x1b\\\x1b[24;1R", 0),
+            (b"\x1b[6n", b"\x1b[24;1R", 0),
+            (b"Choose [", b"S\r", 0),
+            (b"Choose [", b"q\r", 0),
+        ]
+        code, output = self.run_apply(steps)
+        self.assertEqual(code, 0, output)
+        self.assertIn(f"?\t.a{TAIL}", self.records())
+        kept, not_reviewed, _ = manager.sort_differences(self.status(), self.records())
+        self.assertEqual((kept, not_reviewed), ([".a"], [".b"]))
+
+    def test_a_cursor_answer_before_the_color_answer_cannot_become_skip_all(self):
+        # Review F-083: chezmoi stops at the cursor answer, so the color answer joins S.
+        self.real_chezmoi(["a", "b"])
+        answers = b"\x1b[24;1R\x1b]11;rgb:0000/0000/0000\x1b\\"
+        steps = [(b"\x1b[6n", answers, 0), (b"Choose [", b"S\r", 0), (b"Choose [", b"q\r", 0)]
+        code, output = self.run_apply(steps)
+        self.assertEqual(code, 0, output)
+        kept, not_reviewed, _ = manager.sort_differences(self.status(), self.records())
+        self.assertEqual((kept, not_reviewed), ([".a"], [".b"]))
+
+    def test_diff_then_skip_still_records_cleanly(self):
+        self.real_chezmoi(["a", "b"])
+        steps = [(b"Choose [", b"d\r", 0), (b"Choose [", b"s\r", 0), (b"Choose [", b"s\r", 0)]
+        code, output = self.run_apply(steps)
+        self.assertEqual(code, 0, output)
+        self.assertNotIn("?", self.records())
+        kept, not_reviewed, _ = manager.sort_differences(self.status(), self.records())
+        self.assertEqual((kept, not_reviewed), ([".a", ".b"], []))
+
     def test_a_quiet_content_script_does_not_end_the_apply(self):
         self.real_chezmoi(["a"], [("run_before_quiet.sh", "sleep 2\n")])
         code, output = self.run_apply([(b"Choose [", b"s\r", 0)])
@@ -294,6 +347,11 @@ class ResolveTests(unittest.TestCase):
             with self.subTest(listing=listing), self.assertRaises(ValueError):
                 manager.every_run_scripts(listing)
 
+    def test_a_question_mark_overrides_skip_all(self):
+        records = f"Skip-conflicts\t.a{TAIL}\n?\t.a{TAIL}\nquit\t.a{TAIL}\n"
+        kept, not_reviewed, _ = manager.sort_differences("MM .a\nMM .b\n", records)
+        self.assertEqual((kept, not_reviewed), ([".a"], [".b"]))
+
     def test_a_recorded_skip_all_keeps_every_file_and_a_question_mark_does_not(self):
         status = "MM .a\nMM .b\n"
         kept, not_reviewed, _ = manager.sort_differences(status, f"Skip-conflicts\t.a{TAIL}\n")
@@ -334,6 +392,7 @@ class DifferenceProblemTests(unittest.TestCase):
         self.assertIn("Unconfirmed: ~/.b. Fleet could not confirm an earlier answer.", text)
         self.assertIn("That answer may have kept these files.", text)
         self.assertNotIn("Not reviewed", text)
+        self.assertNotIn("stopped before", text)
         text = manager.difference_problems([".b"], [".c"], unconfirmed=False)
         self.assertIn("Not reviewed: ~/.b. Fleet saw no answer for these local changes.", text)
         self.assertIn("Managed files still differ after the apply: ~/.c.", text)

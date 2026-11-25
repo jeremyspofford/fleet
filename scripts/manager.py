@@ -1331,7 +1331,9 @@ def sort_differences(status, choices, every_run=frozenset()):
     A local change counts as kept when chezmoi asked about it, or once the user pressed S.
     """
     records = [line.split("\t", 1) for line in choices.splitlines() if "\t" in line]
-    skip_all = any(key.strip() in ("S", "Skip-conflicts") for key, _ in records)
+    # A "?" record means Fleet cannot tell what chezmoi read, so S may not have been pressed.
+    unsure = any(key.strip() == "?" for key, _ in records)
+    skip_all = not unsure and any(key.strip() in ("S", "Skip-conflicts") for key, _ in records)
     # chezmoi names the file, then adds this fixed tail. Strip only the tail.
     asked = {prompt.removesuffix(CONFLICT_TAIL) for _, prompt in records}
     kept, not_reviewed, others = [], [], []

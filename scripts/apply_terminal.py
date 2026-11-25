@@ -93,6 +93,7 @@ class Relay:
         self.line = b""  # chezmoi output since the last newline, not yet shown
         self.typed = b""  # user input since the last Enter
         self.menu = None  # (question, choices, clean) while a conflict menu waits
+        self.last = None  # (question, menu word) of the last record
         # True once anything is typed while no menu waits. chezmoi may read it as the next
         # answer, so the next menu's answer is not recorded. Answering a menu clears it.
         self.ahead = False
@@ -128,6 +129,10 @@ class Relay:
         # Input typed before the menu may already wait in chezmoi's queue. Never record it.
         waiting = struct.unpack("i", fcntl.ioctl(self.slave, termios.FIONREAD, b"\0\0\0\0"))[0]
         clean = not self.ahead and not self.typed and not waiting
+        # chezmoi asks the same question twice in a row only after d, or after it rejected the
+        # line. A rejected line differs from what Fleet recorded, so that record is unsure.
+        if self.last and self.last[0] == found["question"] and self.last[1] not in ("diff", "?"):
+            self.record("?", found["question"])
         self.menu = (found["question"], choices, clean)
         self.line = b""
         self.show(explain(found["question"], choices).replace("\n", "\r\n").encode())
@@ -223,6 +228,11 @@ class Relay:
             key = resolve(self.typed.decode(errors="replace"), choices)
             if key is None:
                 return  # chezmoi asks again, and that new menu is recorded instead
+        self.record(key, question)
+
+    def record(self, key, question):
+        """Add one record: the menu word, a tab, and chezmoi's question."""
+        self.last = (question, key)
         if self.choices_file:
             with open(self.choices_file, "a") as stream:
                 stream.write(f"{key}\t{question}\n")
