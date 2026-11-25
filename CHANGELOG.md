@@ -2,6 +2,49 @@
 
 This file follows Keep a Changelog. Versions use SemVer: major.minor.patch.
 
+## [0.11.0] - 2026-11-25
+
+### Added
+
+- fleet dotfiles own and fleet dotfiles source (#98)
+- capture a whole edited file into plain or Stow content (#96)
+- ask every first enrollment for a name, record install stages, and end with a check (#85)
+- apply the owner's agent rulings on skills, local extensions, uninstall, and secrets (#82)
+- apply the owner's agent rulings on user values, core, rules, and plugins (#81)
+- support sibling WSL distros on one Windows host (#77)
+- add fleet tools adopt to record installed tool versions (#75)
+
+### Changed
+
+- Claude Opus 5.5 <noreply@anthropic.com>
+- propose capturing local dotfile edits into content (#89)
+- https://claude.ai/code/session_01VHXAyZNQYaE3KaWYVP4sXo
+- set the update-check state the display tests expect (#95)
+- https://claude.ai/code/session_01VHXAyaCJMYbiMbEbM2uXiY
+- pin the first draft's conflict rule to Fleet 0.5.0 (#91)
+- prove an unknown member field is dropped, not fatal (#83)
+- record the owner's rulings on seven more agent module points (#79)
+- record the owner's rulings on five agent module points (#78)
+- mark the agent module's open points against main (#74)
+
+### Fixed
+
+- report a file kept at the conflict prompt as kept by you, not a failure (#90)
+- small follow-ups from reviews F-070 and F-082 (#97)
+- read the saved machine name from the home being worked on (#93)
+- write Fleet's Mise fragment before the handover retires the old file (#92)
+- one version form for the proposal and the rule, and firmer name tests (#94)
+- close the version-name edges that review F-044 found (#88)
+- remove the causes of two CI flakes (#87)
+- preview the Mise handover in fleet diff, and name drifted files in doctor (#86)
+- scan TOML strings fully, keep CRLF, and release every entry of a held plugin (#84)
+- keep mise use -g out of Fleet's files and explain kept conflicts (#80)
+- show agents, groups, domain, secrets, and addons lists as rows (#76)
+- show lists as a heading and one aligned row per item (#73)
+- identify machines by a stable ID and name them by their hostname (#72)
+- write the Mise config with [tools] and [settings] tables (#71)
+- say what the Agents choice does and what the content declares (#69)
+
 ## [0.10.0] - 2026-11-19
 
 ### Added
