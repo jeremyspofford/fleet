@@ -13,6 +13,7 @@ Help: python3 scripts/capture.py --help.
 
 # Exit codes: 0 when captured and updated, or when cancelled.
 #   1 when a file is refused, or none is left to capture.
+#   1 when the commit fails; the checkout is then put back.
 #   1 when origin changed during the review, or did not take the commit.
 #   Otherwise the update's own code.
 import collections
@@ -438,6 +439,7 @@ def run(home, names, display, update, confirm):
             print(f"Run {display} capture again.")
             return 1
     # Only now does the checkout move: fast-forward to the content captured onto.
+    start = git(checkout, "rev-parse", "HEAD").stdout.decode().strip()
     git(checkout, "merge", "-q", "--ff-only", newest)
     for plan in plans:
         target = checkout / plan.content_name
@@ -450,8 +452,9 @@ def run(home, names, display, update, confirm):
     git(checkout, "add", "--", *(plan.content_name for plan in plans))
     committed = git(checkout, "commit", "-q", "-m", f"capture: {shown} from {machine}", check=False)
     if committed.returncode != 0:
-        # The checkout was clean at the start, so this puts back exactly what capture wrote.
-        git(checkout, "reset", "-q", "--hard", "HEAD")
+        # The checkout was clean at the start, so this puts it back exactly as it was. An update
+        # then still sees origin's newer commits and delivers them.
+        git(checkout, "reset", "-q", "--hard", start)
         print("Could not commit the captured files. Nothing changed.")
         print(committed.stderr.decode(errors="replace").strip())
         return 1

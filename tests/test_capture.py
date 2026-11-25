@@ -459,7 +459,9 @@ class CaptureFinalTests(unittest.TestCase):
                 self.env["GIT_CONFIG_GLOBAL"] = str(config)
                 checkout = self.checkout()
                 for key in ("user.name", "user.email"):
-                    subprocess.run(["git", "-C", str(checkout), "config", "--unset-all", key])
+                    subprocess.run(
+                        ["git", "-C", str(checkout), "config", "--unset-all", key], env=self.env
+                    )
                 line = f"original\n{present} only\n"
                 (self.home / ".file").write_text(line)
                 self.capture(".file")
@@ -467,6 +469,7 @@ class CaptureFinalTests(unittest.TestCase):
                     ["git", "-C", str(checkout), "config", "--local", f"user.{missing}"],
                     capture_output=True,
                     text=True,
+                    env=self.env,
                 ).stdout.strip()
                 self.assertTrue(local, f"user.{missing} was not supplied")
                 self.assertEqual(self.published(".file"), line)
@@ -478,11 +481,20 @@ class CaptureFinalTests(unittest.TestCase):
         hook = checkout / ".git/hooks/pre-commit"
         hook.write_text("#!/bin/sh\necho 'commit refused by hook' >&2\nexit 1\n")
         hook.chmod(0o755)
+        # Origin is ahead, so capture fast-forwards before it commits (review F-090).
+        before = self.git(checkout, "rev-parse", "HEAD").strip()
+        self.push_from_other(lambda other: (other / ".zshrc").write_text(ZSHRC + "x=1\n"))
         (self.home / ".file").write_text("original\nrefused commit\n")
         output = self.capture(".file", expected=1)
         self.assertIn("Could not commit the captured files. Nothing changed.", output)
         self.assertEqual(self.git(checkout, "status", "--porcelain").strip(), "")
         self.assertEqual((checkout / ".file").read_text(), "original\n")
+        # The checkout stays where it was, so the next update still brings the newer content.
+        self.assertEqual(self.git(checkout, "rev-parse", "HEAD").strip(), before)
+        hook.unlink()
+        (self.home / ".file").write_text("original\n")
+        test_command.CommandTests.cli(self, "update")
+        self.assertIn("x=1", (self.home / ".zshrc").read_text())
 
     def test_a_not_own_capture_adds_the_final_newline_before_its_update(self):
         self.content_repository()

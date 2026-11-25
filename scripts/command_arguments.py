@@ -129,6 +129,7 @@ EXAMPLES = {
 # Diff --stat returns the same codes as diff. A failed remote connection returns nonzero.
 # Capture returns 0 when captured, or when cancelled.
 # Capture returns 1 when a file is refused, or when none is left to capture.
+# Capture returns 1 when the commit fails; the checkout is then put back.
 # Capture returns 1 when origin changed during the review, or did not take the commit.
 # A refused file still lets the others be captured. Otherwise capture returns the update's code.
 def help_epilog(name, display, action=None):
