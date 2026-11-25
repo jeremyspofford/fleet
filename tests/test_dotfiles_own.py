@@ -90,6 +90,26 @@ class DotfilesOwnTests(unittest.TestCase):
         # The checkout still belongs to the saved source, so a check works.
         test_command.CommandTests.cli(self, "check", expected=0)
 
+    def test_every_branch_that_followed_the_old_origin_follows_the_new_one(self):
+        # Review F-101, blocker 5: rename points every branch at upstream, against ruling 7.
+        self.content_repository()
+        self.enroll(self.bare)
+        checkout = self.checkout()
+        self.git(checkout, "branch", "-q", "other")
+        self.git(checkout, "push", "-q", "-u", "origin", "other")
+        self.read_only_origin()
+        mine = self.empty_repository()
+        answers = [(WHERE, b"u\n"), (b"Address", f"{mine}\n".encode())]
+        output = self.terminal(["dotfiles", "own"], answers)
+        self.assertIn(f"origin is now {mine}.", output)
+        for branch in ("main", "other"):
+            remote = self.git(checkout, "config", "--get", f"branch.{branch}.remote").strip()
+            self.assertEqual(remote, "origin", branch)
+        self.git(checkout, "switch", "-q", "other")
+        RepointSafetyTests.base_moves_on(self)
+        RepointSafetyTests.update(self)
+        self.assertNotIn("BASE_NEW", (self.home / ".zshrc").read_text())
+
     def test_an_origin_you_can_push_to_is_already_yours(self):
         self.content_repository()
         self.enroll(self.bare)
@@ -225,6 +245,22 @@ class RepointSafetyTests(unittest.TestCase):
         self.assertEqual(self.git(self.checkout(), "rev-parse", "HEAD").strip(), head)
         self.assertEqual(self.saved_source(), str(self.bare))
         self.assertNotIn("BASE_NEW", (self.home / ".zshrc").read_text())
+
+    def test_a_moved_origin_keeps_every_branch_on_origin(self):
+        # Review F-101, blocker 5, on the source path: rename points every branch at upstream.
+        self.content_repository()
+        self.enroll(self.bare)
+        checkout = self.checkout()
+        self.git(checkout, "branch", "-q", "other")
+        self.git(checkout, "push", "-q", "-u", "origin", "other")
+        moved = self.base / "moved.git"
+        command("git", "clone", "-q", "--bare", str(self.bare), str(moved))
+        test_command.CommandTests.cli(self, "dotfiles", "source", "--repo", str(moved))
+        code, output = self.update()
+        self.assertIn(f"origin is now {moved}.", output)
+        for branch in ("main", "other"):
+            remote = self.git(checkout, "config", "--get", f"branch.{branch}.remote").strip()
+            self.assertEqual(remote, "origin", branch)
 
     def test_an_unreadable_address_keeps_the_old_source_and_fails(self):
         self.content_repository()

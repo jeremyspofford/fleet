@@ -595,7 +595,11 @@ def prepare_manager(home, workspace):
     return updates.stage(home / MANAGER, workspace / "manager")
 
 
-def update(home):
+def update(home, content_changed=False):
+    """Run the normal update. CONTENT_CHANGED applies content that is already in the checkout.
+
+    merge-base sets it: its merge is pushed, so origin is not ahead and nothing else would apply.
+    """
     import dotfiles_own
 
     run_index.stage("check")
@@ -614,6 +618,8 @@ def update(home):
         return 2
     checked = load_json(home / updates.CACHE, {})
     triggers = [source["name"] + " update" for source in checked["sources"] if source["behind"]]
+    if content_changed and "content update" not in triggers:
+        triggers.append("content update")
     if drift:
         triggers.append("drift repair")
     from run_account import RECORD
@@ -1125,7 +1131,9 @@ def dotfiles_command(home, args, display):
     if args.action == "merge-base":
         import dotfiles_own
 
-        return dotfiles_own.merge_base(home, display, confirm, profile(home))
+        return dotfiles_own.merge_base(
+            home, display, confirm, profile(home), lambda: update(home, content_changed=True)
+        )
     if args.action == "source":
         try:
             request = remote.profile_request("dotfiles", "source", {"repo": args.repo})

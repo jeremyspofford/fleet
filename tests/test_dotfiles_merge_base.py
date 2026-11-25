@@ -6,6 +6,7 @@ Usage: python3 -m unittest discover -s tests -v.
 Help: PYTHONPATH=scripts:tests python3 tests/test_dotfiles_merge_base.py --help.
 """
 
+import shutil
 import unittest
 
 import test_capture
@@ -59,6 +60,90 @@ class MergeBaseTests(unittest.TestCase):
         self.assertIn("export BASE_NEW=1", published)
         status = self.git(self.checkout(), "status", "--porcelain").strip()
         self.assertEqual(status, "")
+        # Review F-101, blocker 3: the merge reaches this machine's home, as capture does.
+        self.assertIn("export BASE_NEW=1", (self.home / ".zshrc").read_text())
+        self.assertNotIn("to apply it", output)
+
+    def fake_git(self, version, merge_tree_exit=None):
+        """Put a git first on PATH that reports VERSION, and can make merge-tree fail."""
+        fake = self.base / "fake-git"
+        fake.mkdir(exist_ok=True)
+        failing = ""
+        if merge_tree_exit is not None:
+            failing = f'  merge-tree) echo "usage: git merge-tree" >&2; exit {merge_tree_exit};;\n'
+        # Fleet runs git -C CHECKOUT ..., so the subcommand is not the first argument.
+        (fake / "git").write_text(
+            "#!/bin/sh\n"
+            'for argument; do case "$argument" in\n'
+            f'  --version) echo "git version {version}"; exit 0;;\n'
+            f"{failing}"
+            "esac; done\n"
+            f'exec {shutil.which("git")} "$@"\n'
+        )
+        (fake / "git").chmod(0o755)
+        self.env["PATH"] = f"{fake}:{self.env['PATH']}"
+
+    def assert_unchanged(self, before, output):
+        self.assertIn("Nothing changed.", output)
+        self.assertEqual(self.head(), before)
+        self.assertEqual(self.git(self.checkout(), "status", "--porcelain").strip(), "")
+        self.assertNotIn("BASE_NEW", self.git(self.mine, "show", "main:.zshrc"))
+
+    def test_an_origin_with_newer_commits_stops_before_anything_changes(self):
+        # Review F-101, blocker 1: another machine pushed to origin first.
+        self.own_setup()
+        self.change(self.mine, ".other", "from another machine\n", "mine-clone")
+        self.change(self.bare, ".zshrc", test_capture.ZSHRC + "export BASE_NEW=1\n", "base-clone")
+        before = self.head()
+        output = test_command.CommandTests.cli(self, "dotfiles", "merge-base", expected=1)
+        self.assertIn("origin has commits that this checkout does not have.", output)
+        self.assert_unchanged(before, output)
+
+    def test_a_refused_push_puts_the_checkout_back_and_fails(self):
+        # Review F-101, blocker 2: origin refuses the push.
+        self.own_setup()
+        hook = self.mine / "hooks/pre-receive"
+        hook.write_text("#!/bin/sh\necho refused by test >&2\nexit 1\n")
+        hook.chmod(0o755)
+        self.change(self.bare, ".zshrc", test_capture.ZSHRC + "export BASE_NEW=1\n", "base-clone")
+        before = self.head()
+        output = self.terminal(["dotfiles", "merge-base"], [(PROMPT, b"merge\n")], expected=1)
+        self.assertIn("origin did not take the merge.", output)
+        self.assert_unchanged(before, output)
+        self.assertNotIn("BASE_NEW", (self.home / ".zshrc").read_text())
+
+    def test_an_ignored_local_file_that_upstream_adds_stops_it(self):
+        # Review F-101, blocker 4: an ignored local file must never be overwritten.
+        self.own_setup()
+        self.change(self.mine, ".gitignore", "notes.local\n", "mine-clone")
+        self.git(self.checkout(), "pull", "-q", "origin", "main")
+        notes = self.checkout() / "notes.local"
+        notes.write_text("my private notes\n")
+        self.change(self.bare, "notes.local", "base file\n", "base-clone")
+        before = self.head()
+        output = test_command.CommandTests.cli(self, "dotfiles", "merge-base", expected=1)
+        self.assertIn("Upstream would overwrite these ignored local files: notes.local.", output)
+        self.assert_unchanged(before, output)
+        self.assertEqual(notes.read_text(), "my private notes\n")
+
+    def test_git_older_than_2_38_stops_with_a_clear_message(self):
+        self.own_setup()
+        self.change(self.bare, ".zshrc", test_capture.ZSHRC + "export BASE_NEW=1\n", "base-clone")
+        self.fake_git("2.37.1")
+        before = self.head()
+        output = test_command.CommandTests.cli(self, "dotfiles", "merge-base", expected=1)
+        self.assertIn("needs Git 2.38 or later.\nThis machine has Git 2.37.1.", output)
+        self.assert_unchanged(before, output)
+
+    def test_a_merge_tree_error_is_not_reported_as_a_conflict(self):
+        self.own_setup()
+        self.change(self.bare, ".zshrc", test_capture.ZSHRC + "export BASE_NEW=1\n", "base-clone")
+        self.fake_git("2.43.0", merge_tree_exit=129)
+        before = self.head()
+        output = test_command.CommandTests.cli(self, "dotfiles", "merge-base", expected=1)
+        self.assertNotIn("conflict", output)
+        self.assertIn("Git could not test the merge.", output)
+        self.assert_unchanged(before, output)
 
     def test_a_conflict_names_each_file_and_changes_nothing(self):
         self.own_setup()

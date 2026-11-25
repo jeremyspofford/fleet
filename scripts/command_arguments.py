@@ -92,8 +92,9 @@ GROUPS = {
         "Each reachable member then gets the new address.",
         "merge-base": "Merge the base repository's new commits into your own.\n"
         "Fetch upstream, review the changes, then type merge and press Enter.\n"
-        "Fleet then commits and pushes to origin. Updates never merge upstream.\n"
-        "A conflict names each file and changes nothing.",
+        "Enter alone cancels. Fleet then commits, pushes to origin, and runs the update.\n"
+        "Updates never merge upstream. Needs Git 2.38 or later.\n"
+        "A conflict, an ignored local file in the way, or a refused push changes nothing.",
         "source": "Save a new content address.\n"
         "The next update moves the checkout's origin there and keeps the old one as upstream.\n"
         "Unpushed commits or edited managed files keep the old address.",
