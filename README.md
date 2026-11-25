@@ -19,7 +19,7 @@ curl -fsSL https://raw.githubusercontent.com/jeremyspofford/fleet/main/install.s
 - Re-run the same command to update. Saved selections remain unchanged.
 - Backups live in `~/.fleet/backups/<timestamp>/`. Review `MANIFEST.json` before restoring `home/` files and external targets.
 
-Requires bash 4.4+, git, curl, tar, and Python 3.11+. Use Linux, macOS, or WSL (Windows Subsystem for Linux).
+Requires bash 4.4+, git, curl, tar, and Python 3.11+. `fleet dotfiles merge-base` needs Git 2.38 or later. Use Linux, macOS, or WSL (Windows Subsystem for Linux).
 Missing chezmoi and Mise install into `~/.local/bin`. Setup never uses sudo.
 
 macOS ships bash 3.2, which is too old for Fleet's scripts. Fleet then offers to install bash with Homebrew:
@@ -466,6 +466,16 @@ Many people start from another person's dotfiles repository. You cannot push the
 5. Fleet sends the new address to each member it can reach. It prints a command for each member it cannot reach.
 
 If the push fails, Fleet puts the remotes back, and nothing changes.
+
+The base repository keeps changing after you own your copy. Updates never merge its changes.
+Run `fleet dotfiles merge-base` to bring them in:
+
+1. Commit and push your own changes first. The checkout must equal `origin`, or Fleet stops.
+2. Run the command. Fleet fetches `upstream` and tests the merge without changing your checkout.
+3. Read the result. A conflict, or an ignored local file in the way, names each file, and nothing changes.
+4. Review the changes. Type `merge` and press Enter, or press Enter alone to cancel.
+5. Wait while Fleet commits the merge, pushes it to `origin`, and runs the update on this machine.
+   If `origin` refuses the push, Fleet resets the checkout, and nothing changes.
 
 `fleet dotfiles source --repo URL` saves a new content address on one machine. Add `--machine NAME` for a member.
 At the next update, the checkout's `origin` moves to that address, and the old address stays as `upstream`.

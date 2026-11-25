@@ -112,7 +112,8 @@ DESCRIPTIONS = {
         "Each download is a Git clone in ~/.fleet/dotfiles.\n"
         "Only the active repository is applied, updated, checked, and compared.\n"
         "Downloading never activates a repository; use does, after a review.\n"
-        "Own makes the active repository yours; source moves content to a new address."
+        "Own makes the active repository yours; source moves content to a new address.\n"
+        "Merge-base brings the base repository's new commits into yours, after a review."
     ),
     "domain": (
         "Show or choose content additions.\n"
@@ -594,7 +595,11 @@ def prepare_manager(home, workspace):
     return updates.stage(home / MANAGER, workspace / "manager")
 
 
-def update(home):
+def update(home, content_changed=False):
+    """Run the normal update. CONTENT_CHANGED applies content that is already in the checkout.
+
+    merge-base sets it: its merge is pushed, so origin is not ahead and nothing else would apply.
+    """
     import dotfiles_own
 
     run_index.stage("check")
@@ -613,6 +618,8 @@ def update(home):
         return 2
     checked = load_json(home / updates.CACHE, {})
     triggers = [source["name"] + " update" for source in checked["sources"] if source["behind"]]
+    if content_changed and "content update" not in triggers:
+        triggers.append("content update")
     if drift:
         triggers.append("drift repair")
     from run_account import RECORD
@@ -1121,6 +1128,12 @@ def dotfiles_command(home, args, display):
     library = dotfiles_library
     if args.action == "own":
         return own_dotfiles(home, display)
+    if args.action == "merge-base":
+        import dotfiles_own
+
+        return dotfiles_own.merge_base(
+            home, display, confirm, profile(home), lambda: update(home, content_changed=True)
+        )
     if args.action == "source":
         try:
             request = remote.profile_request("dotfiles", "source", {"repo": args.repo})

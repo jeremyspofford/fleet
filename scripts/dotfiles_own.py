@@ -1,6 +1,7 @@
-"""Make the active content your own repository, and move content to a new address.
+"""Make the active content your own repository, move content, and merge base changes.
 
 Internal API: own(home, display, ask, save_source, send);
+merge_base(home, display, confirm, profile);
 repoint(home, profile, display, save), which returns True when the update may go on.
 Own checks origin first. When you can push there, it is already yours.
 Otherwise you choose: g creates a repository with gh, u takes an address you type, c cancels.
@@ -13,10 +14,15 @@ Usage: import this module from Fleet.
 Help: python3 scripts/dotfiles_own.py --help.
 """
 
-# Exit codes: 0 when the content is yours, was already yours, or the choice was cancelled.
-#   1 when the push to the new repository fails; nothing changes then.
+# Exit codes: own returns 0 when the content is yours, was already yours, or was cancelled.
+#   Own returns 1 when the push to the new repository fails; nothing changes then.
+#   Merge-base returns 0 when nothing is new or when cancelled, and the update's code after a
+#   merge that pushed. It returns 1 when it stops; nothing changes then. It stops for Git before
+#   2.38, no upstream, no branch, uncommitted edits, a failed fetch, a checkout that differs from
+#   origin, a conflict, an ignored local file in the way, a failed merge, or a refused push.
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 
@@ -83,11 +89,35 @@ def move_to(checkout, address):
         branch = git(checkout, "symbolic-ref", "--short", "HEAD", check=False).stdout.strip()
         if branch:
             git(checkout, "branch", "-q", "--set-upstream-to", f"origin/{branch}", check=False)
+        follow_origin(checkout)
         return True
     git(checkout, "remote", "remove", "origin")
     if old:
         git(checkout, "remote", "rename", "upstream", "origin")
     return False
+
+
+def follow_origin(checkout):
+    """Point every branch that follows upstream at origin. Updates never pull upstream (ruling 7).
+
+    Renaming origin to upstream also renames each branch's remote, so every branch needs this.
+    """
+    branches = git(checkout, "for-each-ref", "--format=%(refname:short)", "refs/heads").stdout
+    for name in branches.split():
+        key = f"branch.{name}.remote"
+        if git(checkout, "config", "--get", key, check=False).stdout.strip() == "upstream":
+            git(checkout, "config", key, "origin")
+
+
+GIT_FLOOR = (2, 38)
+
+
+def git_version(checkout):
+    """Return Git's version as text, and whether it is at least GIT_FLOOR."""
+    found = re.search(r"(\d+)\.(\d+)[.\d]*", git(checkout, "--version", check=False).stdout)
+    if not found:
+        return "unknown", False
+    return found[0], (int(found[1]), int(found[2])) >= GIT_FLOOR
 
 
 def members(home):
@@ -157,6 +187,114 @@ def own(home, display, ask, save_source, send):
     return 0
 
 
+def merge_base(home, display, confirm, profile, update):
+    """Merge the base repository's new commits into your own, push to origin, then apply.
+
+    CONFIRM(word, explanation) asks for the typed word. UPDATE runs the normal update.
+    Updates never do this (ruling 7). Fleet tests the merge in memory before anything moves,
+    so a conflict names each file and changes nothing. A refused push resets the checkout.
+    """
+    checkout = dotfiles_library.active(home, profile)
+    version, recent = git_version(checkout)
+    if not recent:
+        print(f"{display} dotfiles merge-base needs Git 2.38 or later.")
+        print(f"This machine has Git {version}.")
+        print("Install a newer Git, then try again. Nothing changed.")
+        return 1
+    if not remote_url(checkout, "upstream"):
+        print("This content has no upstream.")
+        print(f"It gets one when {display} dotfiles own makes the content yours.")
+        return 1
+    branch = git(checkout, "symbolic-ref", "-q", "--short", "HEAD", check=False).stdout.strip()
+    if not branch:
+        print(f"The content checkout is not on a branch. Run git -C {checkout} switch BRANCH.")
+        return 1
+    if git(checkout, "status", "--porcelain").stdout.strip():
+        print(f"The content checkout has uncommitted edits: {checkout}. Nothing changed.")
+        return 1
+    # origin must hold exactly this checkout. Otherwise the merge could not be pushed.
+    if git(checkout, "fetch", "-q", "origin", check=False).returncode != 0:
+        print("Could not fetch origin. Nothing changed.")
+        return 1
+    mine = f"origin/{branch}"
+    if git(checkout, "rev-parse", "-q", "--verify", mine, check=False).returncode != 0:
+        print(f"origin has no branch {branch}. Nothing changed.")
+        return 1
+    start = git(checkout, "rev-parse", "HEAD").stdout.strip()
+    if start != git(checkout, "rev-parse", mine).stdout.strip():
+        if git(checkout, "merge-base", "--is-ancestor", "HEAD", mine, check=False).returncode == 0:
+            print("origin has commits that this checkout does not have.")
+            print(f"Run {display} update first, then try again. Nothing changed.")
+        else:
+            print(f"This checkout has commits that are not on {mine}.")
+            print(f"Run git -C {checkout} push origin HEAD, then try again. Nothing changed.")
+        return 1
+    if git(checkout, "fetch", "-q", "upstream", check=False).returncode != 0:
+        print("Could not fetch upstream. Nothing changed.")
+        return 1
+    base = f"upstream/{branch}"
+    if git(checkout, "rev-parse", "-q", "--verify", base, check=False).returncode != 0:
+        print(f"upstream has no branch {branch}. Nothing changed.")
+        return 1
+    count = int(git(checkout, "rev-list", "--count", f"HEAD..{base}").stdout.strip())
+    if not count:
+        print("Nothing new in upstream.")
+        return 0
+    # Try the merge in memory. The checkout does not move unless the merge is clean.
+    trial = git(checkout, "merge-tree", "--write-tree", "--name-only", "HEAD", base, check=False)
+    lines = trial.stdout.splitlines()
+    if trial.returncode not in (0, 1):
+        print("Git could not test the merge. Nothing changed.")
+        print(trial.stderr.strip())
+        return 1
+    if trial.returncode == 1:
+        files = []
+        for line in lines[1:]:
+            if not line:
+                break
+            files.append(line)
+        print(f"These files conflict with upstream: {', '.join(files)}. Nothing changed.")
+        print(f"Resolve them with git in {checkout}, or keep your version.")
+        return 1
+    tree = lines[0]
+    # The status above omits ignored files. The merge would overwrite them without asking.
+    changed = git(checkout, "diff", "--name-only", "-z", "HEAD", tree).stdout.split("\0")
+    listed = git(checkout, "ls-files", "-z", "--others", "--ignored", "--exclude-standard")
+    ignored = set(listed.stdout.split("\0"))
+    in_the_way = [name for name in changed if name and name in ignored]
+    if in_the_way:
+        print(f"Upstream would overwrite these ignored local files: {', '.join(in_the_way)}.")
+        print(f"Move them out of {checkout}, then try again. Nothing changed.")
+        return 1
+    plural = "commit" if count == 1 else "commits"
+    print(f"{count} new {plural} in upstream would change these content files:")
+    print(git(checkout, "diff", "--no-color", "--stat", "HEAD", tree).stdout, end="")
+    print(git(checkout, "diff", "--no-color", "HEAD", tree).stdout, end="")
+    if not confirm("merge", "Merge these upstream commits into your content, then push."):
+        print("Cancelled. Nothing changed.")
+        return 0
+    import capture
+
+    capture.ensure_identity(checkout, profile)
+    message = f"merge-base: {base} into {branch}"
+    merged = git(checkout, "merge", "-q", "--no-ff", "-m", message, base, check=False)
+    if merged.returncode != 0:
+        git(checkout, "merge", "--abort", check=False)
+        print("The merge did not complete. Nothing changed.")
+        print(merged.stderr.strip())
+        return 1
+    print(f"Merged {count} upstream {plural}.")
+    pushed = git(checkout, "push", "-q", "origin", "HEAD", check=False)
+    if pushed.returncode != 0:
+        # The checkout was clean and equal to origin at the start, so this restores it exactly.
+        git(checkout, "reset", "-q", "--hard", start)
+        print("origin did not take the merge. Nothing changed.")
+        print(pushed.stderr.strip())
+        return 1
+    print("Pushed to origin. Fleet now applies it on this machine.")
+    return update()
+
+
 def repoint(home, profile, display, save):
     """Move the checkout's origin to the saved content address, keeping the old one as upstream.
 
@@ -218,6 +356,7 @@ def repoint(home, profile, display, save):
         git(checkout, "fetch", "-q", "origin")
         if branch:
             git(checkout, "branch", "-q", "--set-upstream-to", f"origin/{branch}")
+        follow_origin(checkout)
     except subprocess.CalledProcessError:
         for step in reversed(undo):
             git(checkout, *step, check=False)

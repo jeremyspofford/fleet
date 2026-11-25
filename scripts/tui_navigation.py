@@ -38,6 +38,7 @@ ACTIONS = {
     "dotfiles-use": ("Activate a downloaded repository", ("dotfiles", "use")),
     "dotfiles-remove": ("Remove a downloaded repository", ("dotfiles", "remove")),
     "dotfiles-own": ("Make the active repository your own", ("dotfiles", "own")),
+    "dotfiles-merge-base": ("Merge new base commits into yours", ("dotfiles", "merge-base")),
     "dotfiles-source": ("Move content to a new address", ("dotfiles", "source")),
     "configure": ("Configure — reopen the terminal wizard", ("configure",)),
     "capture": ("Capture — copy an edited file into content", ("capture",)),
@@ -109,6 +110,7 @@ RELATED = {
         "dotfiles-use",
         "dotfiles-remove",
         "dotfiles-own",
+        "dotfiles-merge-base",
         "dotfiles-source",
     ),
     "machines": (
@@ -133,6 +135,7 @@ CHANGING = {
     "dotfiles-use",
     "dotfiles-remove",
     "dotfiles-source",
+    "dotfiles-merge-base",
     "marketplace-delete",
     "marketplace-update",
     "pin-set",
