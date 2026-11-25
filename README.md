@@ -467,6 +467,14 @@ Many people start from another person's dotfiles repository. You cannot push the
 
 If the push fails, Fleet puts the remotes back, and nothing changes.
 
+The base repository keeps changing after you own your copy. Updates never merge its changes.
+Run `fleet dotfiles merge-base` to bring them in:
+
+1. Fleet fetches `upstream` and tries the merge without changing your checkout.
+2. A conflict names each file, and nothing changes.
+3. Otherwise Fleet shows the changes. Type `merge` and press Enter, or press Enter alone to cancel.
+4. Fleet commits the merge and pushes it to `origin`. Run `fleet update` to apply it.
+
 `fleet dotfiles source --repo URL` saves a new content address on one machine. Add `--machine NAME` for a member.
 At the next update, the checkout's `origin` moves to that address, and the old address stays as `upstream`.
 A checkout with unpushed commits, or with edited managed files, keeps its old address. Fleet says why.
