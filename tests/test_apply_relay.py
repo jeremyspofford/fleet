@@ -225,9 +225,45 @@ class ApplyTerminalTests(unittest.TestCase):
         ]
         code, output = self.run_apply(steps)
         self.assertEqual(code, 0, output)
-        self.assertNotIn("^[", self.records())
+        self.assertIn(f"?\t.a{TAIL}", self.records())
+        # The first record keeps chezmoi's raw text, echo included, so .a is not matched as
+        # asked either. The run fails, which is safe (review F-092).
+        _, not_reviewed, _ = manager.sort_differences(self.status(), self.records())
+        self.assertIn(".b", not_reviewed)
+
+    def test_a_plain_text_prefix_before_the_question_still_matches_the_re_ask(self):
+        # Review F-092, blocker 1: the script prints "ready " right before the first question.
+        script = "printf 'x\\033[6n\\n'\nsleep 0.1\nprintf 'ready '\n"
+        self.real_chezmoi(["a", "b"], [("run_before_ready.sh", script)])
+        steps = [
+            (b"\x1b[6n", b"\x1b]11;rgb:0000/0000/0000\x1b\\\x1b[24;1R", 0),
+            (b"x\x1b[6n", b"\x1b[24;1R", 0),
+            (b"Choose [", b"S\r", 0),
+            (b"Choose [", b"q\r", 0),
+        ]
+        code, output = self.run_apply(steps)
+        self.assertEqual(code, 0, output)
+        _, not_reviewed, _ = manager.sort_differences(self.status(), self.records())
+        self.assertIn(".b", not_reviewed)
+
+    def test_a_file_name_with_a_leading_space_is_recorded_as_chezmoi_names_it(self):
+        # Review F-092, blocker 2: " a" must never be recorded as "a".
+        self.real_chezmoi([])
+        source = self.home / ".local/share/chezmoi"
+        for name, target in ((" a", " a"), ("dot_z", ".z"), ("a", "a")):
+            (source / name).write_text(f"{target} from content\n")
+        subprocess.run(
+            ["chezmoi", "--no-tty", "apply"], env=self.env(), check=True, capture_output=True
+        )
+        for target in (" a", ".z", "a"):
+            (self.home / target).write_text("edited here\n")
+        steps = [(b"Choose [", b"o\r", 0), (b"Choose [", b"q\r", 0)]
+        code, output = self.run_apply(steps)
+        self.assertEqual(code, 0, output)
+        self.assertIn(f"overwrite\t a{TAIL}", self.records())
         kept, not_reviewed, _ = manager.sort_differences(self.status(), self.records())
-        self.assertEqual((kept, not_reviewed), ([".a"], [".b"]))
+        self.assertNotIn("a", kept)
+        self.assertIn("a", not_reviewed)
 
     def test_a_cursor_answer_before_the_color_answer_cannot_become_skip_all(self):
         # Review F-083: chezmoi stops at the cursor answer, so the color answer joins S.

@@ -68,12 +68,21 @@ NOISE = re.compile(
 
 
 def clean_question(question):
-    """Return chezmoi's question without echoed terminal answers or control bytes.
+    """Return chezmoi's question without escape sequences, their caret echoes, or control bytes.
 
-    An echoed answer can land in front of the first question but not the re-asked one.
-    The cleaned text names the file in both, so the two compare equal.
+    Spaces stay, because a file name may start with one. Fleet uses this text only to compare.
     """
-    return NOISE.sub("", question).strip()
+    return NOISE.sub("", question)
+
+
+def is_re_ask(earlier, question):
+    """Return True when QUESTION repeats EARLIER, ignoring text printed in front of EARLIER.
+
+    A script's output or an echoed answer can precede the first question, never the re-ask.
+    So a re-ask is the end of the earlier cleaned question. A wrong match only adds "?".
+    """
+    shown = clean_question(question)
+    return bool(shown) and clean_question(earlier).endswith(shown)
 
 
 def resolve(answer, choices):
@@ -148,12 +157,14 @@ class Relay:
         clean = not self.ahead and not self.typed and not waiting
         # chezmoi asks the same question twice in a row only after d, or after it rejected the
         # line. A rejected line differs from what Fleet recorded, so that record is unsure.
-        question = clean_question(found["question"])
-        if self.last and self.last[0] == question and self.last[1] not in ("diff", "?"):
+        # Records keep chezmoi's own question. Cleaned text is only for comparing and showing.
+        question = found["question"]
+        last = self.last
+        if last and last[1] not in ("diff", "?") and is_re_ask(last[0], question):
             self.record("?", question)
         self.menu = (question, choices, clean)
         self.line = b""
-        self.show(explain(question, choices).replace("\n", "\r\n").encode())
+        self.show(explain(clean_question(question), choices).replace("\n", "\r\n").encode())
 
     def flush_quiet(self):
         """Show a partial line after a quiet moment, such as a script's own prompt."""
