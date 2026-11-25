@@ -70,7 +70,8 @@ NOISE = re.compile(
 def clean_question(question):
     """Return chezmoi's question without escape sequences, their caret echoes, or control bytes.
 
-    Spaces stay, because a file name may start with one. Fleet uses this text only to compare.
+    Spaces stay, because a file name may start with one.
+    Fleet uses this text to compare questions and to show the menu, never to record one.
     """
     return NOISE.sub("", question)
 
@@ -120,6 +121,8 @@ class Relay:
         self.typed = b""  # user input since the last Enter
         self.menu = None  # (question, choices, clean) while a conflict menu waits
         self.last = None  # (question, menu word) of the last record
+        self.partial = b""  # the start of this line, shown after a quiet moment
+        self.continued = False  # the current line held other output before this read
         # True once anything is typed while no menu waits. chezmoi may read it as the next
         # answer, so the next menu's answer is not recorded. Answering a menu clears it.
         self.ahead = False
@@ -140,10 +143,15 @@ class Relay:
         now = time.monotonic()
         for query, kind in QUERIES.items():
             self.queries += [(kind, now)] * data.count(query)
+        # Text already on this line, such as a script's printf, would join the next question.
+        # A question that ends such a line names no file reliably. Escape sequences don't count.
+        earlier = (self.partial + self.line).decode(errors="replace")
+        self.continued = b"\n" not in data and bool(clean_question(earlier))
         self.line += data
         while b"\n" in self.line:
             shown, self.line = self.line.split(b"\n", 1)
             self.show(shown + b"\n")
+            self.partial = b""
         self.check_menu()
 
     def check_menu(self):
@@ -154,7 +162,7 @@ class Relay:
         choices = found["choices"].split("/")
         # Input typed before the menu may already wait in chezmoi's queue. Never record it.
         waiting = struct.unpack("i", fcntl.ioctl(self.slave, termios.FIONREAD, b"\0\0\0\0"))[0]
-        clean = not self.ahead and not self.typed and not waiting
+        clean = not self.ahead and not self.typed and not waiting and not self.continued
         # chezmoi asks the same question twice in a row only after d, or after it rejected the
         # line. A rejected line differs from what Fleet recorded, so that record is unsure.
         # Records keep chezmoi's own question. Cleaned text is only for comparing and showing.
@@ -163,13 +171,14 @@ class Relay:
         if last and last[1] not in ("diff", "?") and is_re_ask(last[0], question):
             self.record("?", question)
         self.menu = (question, choices, clean)
-        self.line = b""
+        self.line = self.partial = b""
         self.show(explain(clean_question(question), choices).replace("\n", "\r\n").encode())
 
     def flush_quiet(self):
         """Show a partial line after a quiet moment, such as a script's own prompt."""
         if self.line:
             self.show(self.line)
+            self.partial += self.line
             self.line = b""
 
     def input(self, data):
